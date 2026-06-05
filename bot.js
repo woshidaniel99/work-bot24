@@ -1,9 +1,9 @@
 const TelegramBot = require("node-telegram-bot-api");
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
-const TOKEN         = "8833627825:AAFJnLKHgWnD77cktxqySlmEio1-vOUCtT8";
-const ADMIN_CHAT_ID = "7656343102";
-const GROUP_CHAT_ID = "-1003620728535";
+const TOKEN         = process.env.TOKEN;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
