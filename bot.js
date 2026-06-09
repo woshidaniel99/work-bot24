@@ -7,29 +7,14 @@ const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
-// ─── TIMEZONE (Cambodia GMT+7) ─────────────────────────────────────────────
-const TIMEZONE_OFFSET = 7 * 60 * 60 * 1000;
-
-function nowCambodia() {
-  return new Date(Date.now() + TIMEZONE_OFFSET);
-}
-
-function formatTime(date) {
-  return date.toISOString().slice(11, 16).replace("T", " ");
-}
-
-function formatTimeCambodia(date) {
-  const cam = new Date(date.getTime() + TIMEZONE_OFFSET);
-  return cam.toISOString().slice(11, 16);
-}
-
-// ─── WORK RULES ────────────────────────────────────────────────────────────
-const WORK_START_HOUR = 21; // 9:00 PM Cambodia time
-const WORK_START_MIN  = 0;
-
-// ─── DAILY REPORT TIME (10:30 AM Cambodia) ─────────────────────────────────
-const REPORT_HOUR = 10;
-const REPORT_MIN  = 30;
+// ─── TIMEZONE ──────────────────────────────────────────────────────────────
+// Cambodia = UTC+7
+// 9:00 PM Cambodia = 14:00 UTC (work start)
+// 10:30 AM Cambodia = 03:30 UTC (daily report)
+const WORK_START_UTC_HOUR = 14;
+const WORK_START_UTC_MIN  = 0;
+const REPORT_UTC_HOUR     = 3;
+const REPORT_UTC_MIN      = 30;
 
 const AWAY_LIMITS = {
   eat:    30 * 60 * 1000,
@@ -40,6 +25,8 @@ const AWAY_LIMITS = {
 
 // ─── STATE ─────────────────────────────────────────────────────────────────
 const sessions = {};
+let reportSentToday = false;
+let lastReportDate  = "";
 
 function getSession(userId) {
   if (!sessions[userId]) {
@@ -55,6 +42,7 @@ function getSession(userId) {
       wasLate: false,
       lateMinutes: 0,
       overtimeEvents: [],
+      clockInTime: null,
     };
   }
   return sessions[userId];
@@ -71,18 +59,34 @@ function formatDuration(ms) {
   return `${s}s`;
 }
 
+function nowCambodiaStr() {
+  const cam = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const h   = String(cam.getUTCHours()).padStart(2, "0");
+  const m   = String(cam.getUTCMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
+function nowCambodiaDateStr() {
+  const cam = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  return cam.toISOString().slice(0, 10);
+}
+
 function getMention(msg) {
   if (msg.from.username) return `@${msg.from.username}`;
   return `[${msg.from.first_name || "Staff"}](tg://user?id=${msg.from.id})`;
 }
 
 function getName(msg) {
-  return (msg.from.first_name || "") + (msg.from.last_name ? " " + msg.from.last_name : "") || "Staff";
+  const first = msg.from.first_name || "";
+  const last  = msg.from.last_name  || "";
+  return (first + " " + last).trim() || "Staff";
 }
 
 function sendAdmin(message) {
   if (ADMIN_CHAT_ID && ADMIN_CHAT_ID !== "YOUR_ADMIN_CHAT_ID") {
-    bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" }).catch(() => {});
+    bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" }).catch((e) => {
+      console.error("sendAdmin error:", e.message);
+    });
   }
 }
 
@@ -92,28 +96,22 @@ function send(chatId, message, withKeyboard) {
   bot.sendMessage(chatId, message, opts).catch(() => {});
 }
 
-// ─── LATE CHECK (Cambodia time) ────────────────────────────────────────────
 function isLate() {
-  const cam = nowCambodia();
-  const h   = parseInt(cam.toISOString().slice(11, 13));
-  const m   = parseInt(cam.toISOString().slice(14, 16));
-  const totalMins     = h * 60 + m;
-  const workStartMins = WORK_START_HOUR * 60 + WORK_START_MIN;
-  return totalMins > workStartMins;
+  const now    = new Date();
+  const utcH   = now.getUTCHours();
+  const utcM   = now.getUTCMinutes();
+  const nowMin = utcH * 60 + utcM;
+  const startMin = WORK_START_UTC_HOUR * 60 + WORK_START_UTC_MIN;
+  return nowMin > startMin;
 }
 
 function getMinutesLate() {
-  const cam = nowCambodia();
-  const h   = parseInt(cam.toISOString().slice(11, 13));
-  const m   = parseInt(cam.toISOString().slice(14, 16));
-  const totalMins     = h * 60 + m;
-  const workStartMins = WORK_START_HOUR * 60 + WORK_START_MIN;
-  return totalMins - workStartMins;
-}
-
-function getCurrentCambodiaTime() {
-  const cam = nowCambodia();
-  return cam.toISOString().slice(11, 16);
+  const now    = new Date();
+  const utcH   = now.getUTCHours();
+  const utcM   = now.getUTCMinutes();
+  const nowMin = utcH * 60 + utcM;
+  const startMin = WORK_START_UTC_HOUR * 60 + WORK_START_UTC_MIN;
+  return nowMin - startMin;
 }
 
 function isAdmin(userId) {
@@ -168,9 +166,9 @@ function startAwayTimer(userId, chatId, statusKey, mention, name) {
     sendAdmin(
       `🚨 *OVERTIME ALERT*\n\n` +
       `👤 Staff: ${name}\n` +
-      `📍 Status: ${STATUS_LABELS[statusKey]}\n` +
-      `⏱ Away for: ${awayLabel} (limit: ${limitLabel})\n` +
-      `🕐 Time: ${getCurrentCambodiaTime()} (Cambodia)`
+      `📍 ${STATUS_LABELS[statusKey]}\n` +
+      `⏱ Away: ${awayLabel} (limit: ${limitLabel})\n` +
+      `🕐 ${nowCambodiaStr()} Cambodia`
     );
   }, limit);
 }
@@ -178,11 +176,12 @@ function startAwayTimer(userId, chatId, statusKey, mention, name) {
 // ─── DAILY REPORT ──────────────────────────────────────────────────────────
 function generateDailyReport() {
   const now       = Date.now();
+  const camTime   = nowCambodiaStr();
+  const camDate   = nowCambodiaDateStr();
   const staffList = Object.entries(sessions);
-  const camTime   = getCurrentCambodiaTime();
 
   if (staffList.length === 0) {
-    return `📊 *DAILY REPORT*\n🕐 ${camTime} (Cambodia)\n\nNo staff records today.`;
+    return `📊 *DAILY REPORT*\n📅 ${camDate}\n🕐 ${camTime} Cambodia\n\nNo staff records today.`;
   }
 
   let lateStaff     = [];
@@ -207,70 +206,73 @@ function generateDailyReport() {
     entry += `⏰ Clock-in: ${s.clockInTime || "?"}\n`;
     if (s.status === "off" && s.log) {
       const offEntry = s.log.find(l => l.action.includes("Off Work"));
-      if (offEntry) entry += `🚪 Clock-out: ${offEntry.timeStr}\n`;
+      if (offEntry) entry += `🚪 Clock-out: ${offEntry.timeStr || "?"}\n`;
     }
-    entry += `💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(s.totalAwayMs + currentAwayMs)}\n`;
+    entry += `💼 Work: ${formatDuration(workMs)}\n`;
+    entry += `🚶 Away: ${formatDuration(s.totalAwayMs + currentAwayMs)}\n`;
     if (s.wasLate) entry += `⚠️ Late: ${s.lateMinutes} min\n`;
     if (s.overtimeEvents.length > 0) entry += `🚨 Overtime: ${s.overtimeEvents.length} event(s)\n`;
     fullLog.push(entry);
   });
 
-  let report = `📊 *DAILY REPORT*\n🕐 ${camTime} (Cambodia)\n${"─".repeat(20)}\n\n`;
-  report += lateStaff.length > 0 ? `🚨 *LATE (${lateStaff.length})*\n${lateStaff.join("\n")}\n\n` : `✅ *No late arrivals!*\n\n`;
-  report += overtimeStaff.length > 0 ? `⏱ *OVERTIME (${overtimeStaff.length})*\n${overtimeStaff.join("\n")}\n\n` : `✅ *No overtime!*\n\n`;
-  report += `${"─".repeat(20)}\n📋 *FULL LOG*\n\n${fullLog.join("\n")}`;
+  let report = `📊 *DAILY REPORT*\n📅 ${camDate}\n🕐 ${camTime} Cambodia\n${"─".repeat(20)}\n\n`;
+  report += lateStaff.length > 0
+    ? `🚨 *LATE ARRIVALS (${lateStaff.length})*\n${lateStaff.join("\n")}\n\n`
+    : `✅ *No late arrivals today!*\n\n`;
+  report += overtimeStaff.length > 0
+    ? `⏱ *OVERTIME (${overtimeStaff.length})*\n${overtimeStaff.join("\n")}\n\n`
+    : `✅ *No overtime today!*\n\n`;
+  report += `${"─".repeat(20)}\n📋 *FULL STAFF LOG*\n\n${fullLog.join("\n")}`;
   return report;
 }
 
 function resetDailySessions() {
   Object.keys(sessions).forEach(uid => {
-    sessions[uid].status         = "idle";
-    sessions[uid].workStart      = null;
-    sessions[uid].awayStart      = null;
-    sessions[uid].awayType       = null;
-    sessions[uid].awayTimer      = null;
-    sessions[uid].totalAwayMs    = 0;
-    sessions[uid].log            = [];
-    sessions[uid].wasLate        = false;
-    sessions[uid].lateMinutes    = 0;
-    sessions[uid].overtimeEvents = [];
-    sessions[uid].clockInTime    = null;
+    const s = sessions[uid];
+    s.status         = "idle";
+    s.workStart      = null;
+    s.awayStart      = null;
+    s.awayType       = null;
+    s.awayTimer      = null;
+    s.totalAwayMs    = 0;
+    s.log            = [];
+    s.wasLate        = false;
+    s.lateMinutes    = 0;
+    s.overtimeEvents = [];
+    s.clockInTime    = null;
   });
 }
 
-// ─── AUTO DAILY REPORT (10:30 AM Cambodia = 03:30 UTC) ─────────────────────
-function scheduleDailyReport() {
-  const nowUtc  = Date.now();
-  const camNow  = new Date(nowUtc + TIMEZONE_OFFSET);
-  const next    = new Date(camNow);
-  next.setUTCHours(REPORT_HOUR - 7 < 0 ? REPORT_HOUR - 7 + 24 : REPORT_HOUR - 7);
-  next.setUTCMinutes(REPORT_MIN);
-  next.setUTCSeconds(0);
-  next.setUTCMilliseconds(0);
+// ─── REPORT SCHEDULER (checks every minute) ────────────────────────────────
+// More reliable than setTimeout — survives Railway restarts
+setInterval(() => {
+  const now    = new Date();
+  const utcH   = now.getUTCHours();
+  const utcM   = now.getUTCMinutes();
+  const today  = nowCambodiaDateStr();
 
-  // Convert report time to UTC: 10:30 AM GMT+7 = 03:30 UTC
-  const reportUTCHour = REPORT_HOUR - 7 < 0 ? REPORT_HOUR - 7 + 24 : REPORT_HOUR - 7;
-  const nowDate = new Date();
-  const nextReport = new Date();
-  nextReport.setUTCHours(reportUTCHour, REPORT_MIN, 0, 0);
-  if (nextReport <= nowDate) nextReport.setUTCDate(nextReport.getUTCDate() + 1);
+  // Check if it's 03:30 UTC (= 10:30 AM Cambodia)
+  if (utcH === REPORT_UTC_HOUR && utcM === REPORT_UTC_MIN) {
+    // Only send once per day
+    if (lastReportDate !== today) {
+      lastReportDate = today;
+      console.log(`📊 Sending daily report at 10:30 AM Cambodia (${today})`);
+      sendAdmin(generateDailyReport());
+      setTimeout(() => {
+        resetDailySessions();
+        console.log("🔄 Sessions reset for new day.");
+      }, 5000);
+    }
+  }
+}, 60 * 1000); // check every 60 seconds
 
-  const msUntil = nextReport - nowDate;
-  console.log(`📅 Daily report in ${Math.floor(msUntil/3600000)}h ${Math.floor((msUntil%3600000)/60000)}m (sends at 10:30 AM Cambodia)`);
-
-  setTimeout(() => {
-    sendAdmin(generateDailyReport());
-    console.log("📊 Daily report sent!");
-    setTimeout(() => { resetDailySessions(); console.log("🔄 Sessions reset."); }, 5000);
-    scheduleDailyReport();
-  }, msUntil);
-}
-scheduleDailyReport();
+console.log("⏰ Report scheduler started — sends daily at 10:30 AM Cambodia (03:30 UTC)");
 
 // ─── BLOCKED COMMANDS ──────────────────────────────────────────────────────
 const BLOCKED_PATTERNS = [
-  /\/timer/i, /\/schedule/i, /\/remind/i, /\/auto/i,
-  /\/alarm/i, /set.?timer/i, /set.?reminder/i, /auto.?clock/i,
+  /\/timer/i, /\/schedule/i, /\/remind/i,
+  /\/auto/i,  /\/alarm/i,    /set.?timer/i,
+  /set.?reminder/i,          /auto.?clock/i,
 ];
 
 // ─── /start ────────────────────────────────────────────────────────────────
@@ -294,8 +296,10 @@ bot.onText(/\/adminstatus/, (msg) => {
   if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
   const staffList = Object.entries(sessions);
   if (staffList.length === 0) return bot.sendMessage(msg.chat.id, "📋 No staff online yet.");
-  let report = `👥 *CURRENT STAFF STATUS*\n🕐 ${getCurrentCambodiaTime()} (Cambodia)\n\n`;
-  staffList.forEach(([uid, s]) => { if (s.name) report += `• *${s.name}* → ${STATUS_LABELS[s.status]}\n`; });
+  let report = `👥 *CURRENT STAFF STATUS*\n🕐 ${nowCambodiaStr()} Cambodia\n\n`;
+  staffList.forEach(([uid, s]) => {
+    if (s.name) report += `• *${s.name}* → ${STATUS_LABELS[s.status]}\n`;
+  });
   bot.sendMessage(msg.chat.id, report, { parse_mode: "Markdown" });
 });
 
@@ -307,15 +311,15 @@ bot.on("message", (msg) => {
   const session = getSession(userId);
   const t       = Date.now();
 
-  session.name  = getName(msg);
-  const mention = getMention(msg);
-  const camTime = getCurrentCambodiaTime();
+  // Always refresh name and mention from current message
+  session.name      = getName(msg);
+  const mention     = getMention(msg);
+  const camTime     = nowCambodiaStr();
 
   if (!text) return;
 
-  // ── BLOCK AUTO CLOCK-IN ──────────────────────────────────────────────────
-  const isBlocked = BLOCKED_PATTERNS.some(p => p.test(text));
-  if (isBlocked) {
+  // ── BLOCK AUTO CLOCK-IN ─────────────────────────────────────────────────
+  if (BLOCKED_PATTERNS.some(p => p.test(text))) {
     send(chatId,
       `🚫 *Auto clock-in is not allowed!*\n\n` +
       `${mention} You cannot set scheduled or automatic clock-ins.\n` +
@@ -325,7 +329,7 @@ bot.on("message", (msg) => {
       `⚠️ *AUTO CLOCK-IN ATTEMPT*\n\n` +
       `👤 Staff: ${session.name}\n` +
       `💬 Message: ${text}\n` +
-      `🕐 Time: ${camTime} (Cambodia)`
+      `🕐 ${camTime} Cambodia`
     );
     return;
   }
@@ -337,7 +341,6 @@ bot.on("message", (msg) => {
     if (session.status !== "idle" && session.status !== "off") {
       return send(chatId, `⚠️ ${mention} 你已经上班了！\nYou already clocked in.`);
     }
-
     session.status      = "work";
     session.workStart   = t;
     session.totalAwayMs = 0;
@@ -347,27 +350,22 @@ bot.on("message", (msg) => {
     let msg2 =
       `✅ *上班打卡成功！*\n` +
       `👤 ${mention}\n` +
-      `⏰ Clock-in: ${camTime} (Cambodia)\n\n` +
+      `⏰ Clock-in: ${camTime} Cambodia\n\n` +
       `Status: ${STATUS_LABELS["work"]}`;
 
     if (isLate()) {
       const minsLate      = getMinutesLate();
       session.wasLate     = true;
       session.lateMinutes = minsLate;
-
-      // Show late warning in GROUP
       msg2 += `\n\n🚨 *${mention} is LATE by ${minsLate} minute(s)!*\n⏰ Should clock in at 9:00 PM`;
-
-      // Notify admin privately
       sendAdmin(
         `🚨 *LATE ARRIVAL*\n\n` +
         `👤 Staff: ${session.name}\n` +
-        `⏰ Clocked in: ${camTime} (Cambodia)\n` +
+        `⏰ Clock-in: ${camTime} Cambodia\n` +
         `📌 Should start: 9:00 PM\n` +
         `⏱ Late by: *${minsLate} minute(s)*`
       );
     }
-
     send(chatId, msg2, true);
   }
 
@@ -387,17 +385,16 @@ bot.on("message", (msg) => {
     send(chatId,
       `🔴 *下班打卡！*\n` +
       `👤 ${mention}\n` +
-      `⏰ Clock-out: ${camTime} (Cambodia)\n` +
+      `⏰ Clock-out: ${camTime} Cambodia\n` +
       `🕐 Total: ${formatDuration(totalMs)}\n` +
       `💼 Work: ${formatDuration(workMs)}\n` +
       `🚶 Away: ${formatDuration(session.totalAwayMs)}`,
       true
     );
-
     sendAdmin(
       `📋 *CLOCKED OUT*\n\n` +
       `👤 Staff: ${session.name}\n` +
-      `⏰ Clock-out: ${camTime} (Cambodia)\n` +
+      `⏰ Clock-out: ${camTime} Cambodia\n` +
       `🕐 Total: ${formatDuration(totalMs)}\n` +
       `💼 Work: ${formatDuration(workMs)}\n` +
       `🚶 Away: ${formatDuration(session.totalAwayMs)}`
@@ -417,7 +414,6 @@ bot.on("message", (msg) => {
     if (["eat", "toilet", "smoke", "other"].includes(session.status)) {
       return send(chatId, `⚠️ ${mention} 你已经在: ${STATUS_LABELS[session.status]}`);
     }
-
     let statusKey = "other"; let emoji = "🔵";
     if (text.includes("Eat")    || text.includes("吃饭")) { statusKey = "eat";    emoji = "🍜"; }
     if (text.includes("Toilet") || text.includes("厕所")) { statusKey = "toilet"; emoji = "🚻"; }
@@ -430,11 +426,10 @@ bot.on("message", (msg) => {
 
     send(chatId,
       `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n` +
-      `Time: ${camTime} (Cambodia)\n` +
+      `Time: ${camTime} Cambodia\n` +
       `⏱ Limit: ${formatDuration(AWAY_LIMITS[statusKey])}`,
       true
     );
-
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
@@ -454,7 +449,6 @@ bot.on("message", (msg) => {
       session.totalAwayMs += awayDuration;
       session.awayStart = null;
     }
-
     const limitMs     = AWAY_LIMITS[session.awayType] || 0;
     const wasOvertime = awayDuration > limitMs;
     session.status    = "work";
@@ -462,12 +456,11 @@ bot.on("message", (msg) => {
 
     let msg2 =
       `💺 ${mention} *回座！/ Back to seat!*\n` +
-      `Time: ${camTime} (Cambodia)\n` +
+      `Time: ${camTime} Cambodia\n` +
       `Away: ${formatDuration(awayDuration)}`;
 
     if (wasOvertime) {
-      const overMs = awayDuration - limitMs;
-      msg2 += `\n⚠️ Overtime by *${formatDuration(overMs)}*!`;
+      msg2 += `\n⚠️ Overtime by *${formatDuration(awayDuration - limitMs)}*!`;
     }
     send(chatId, msg2, true);
   }
@@ -475,4 +468,4 @@ bot.on("message", (msg) => {
 
 // ─── ERRORS ────────────────────────────────────────────────────────────────
 bot.on("polling_error", (err) => console.error("Polling error:", err.message));
-console.log("✅ Work Check-in Bot is running... (Cambodia GMT+7)");
+console.log("✅ Work Check-in Bot is running! Cambodia GMT+7");
