@@ -262,16 +262,27 @@ function resetDailySessions() {
 }
 
 // ─── REPORT SCHEDULER ──────────────────────────────────────────────────────
+// Fires any time at or after 03:30 UTC (10:30 AM Cambodia) if not sent today.
+// Using a window (not exact minute) means a server restart won't skip it.
+const REPORT_TRIGGER_MIN = REPORT_UTC_HOUR * 60 + REPORT_UTC_MIN; // minutes since UTC midnight
+
 setInterval(() => {
-  const now   = new Date();
-  const today = nowCambodiaDateStr();
-  if (now.getUTCHours() === REPORT_UTC_HOUR && now.getUTCMinutes() === REPORT_UTC_MIN && lastReportDate !== today) {
+  const now      = new Date();
+  const today    = nowCambodiaDateStr();
+  const nowMin   = now.getUTCHours() * 60 + now.getUTCMinutes();
+
+  // Report window: from 03:30 UTC up to 04:30 UTC (gives a 1-hour safety window)
+  const inWindow = nowMin >= REPORT_TRIGGER_MIN && nowMin < REPORT_TRIGGER_MIN + 60;
+
+  if (inWindow && lastReportDate !== today) {
     lastReportDate = today;
-    console.log(`📊 Sending daily report...`);
+    console.log(`📊 Sending daily report... (${today} at ${nowCambodiaStr()} Cambodia)`);
     sendAdmin(generateDailyReport());
-    setTimeout(() => { resetDailySessions(); console.log("🔄 Sessions reset."); }, 5000);
+    setTimeout(() => { resetDailySessions(); console.log("🔄 Sessions reset for new day."); }, 5000);
   }
-}, 60 * 1000);
+}, 30 * 1000); // check every 30 seconds
+
+console.log(`⏰ Report scheduler active — sends daily at 10:30 AM Cambodia`);
 
 // ─── BLOCKED COMMANDS ──────────────────────────────────────────────────────
 const BLOCKED_PATTERNS = [/\/timer/i, /\/schedule/i, /\/remind/i, /\/auto/i, /\/alarm/i, /set.?timer/i, /set.?reminder/i, /auto.?clock/i];
