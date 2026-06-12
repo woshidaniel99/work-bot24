@@ -1,4 +1,6 @@
 const TelegramBot = require("node-telegram-bot-api");
+const ExcelJS     = require("exceljs");
+const fs          = require("fs");
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 const TOKEN         = process.env.TOKEN;
@@ -311,6 +313,103 @@ bot.onText(/\/adminstatus/, (msg) => {
   let report = `👥 *CURRENT STAFF STATUS*\n🕐 ${nowCambodiaStr()} Cambodia\n\n`;
   staffList.forEach(([uid, s]) => { if (s.name) report += `• *${s.name}* → ${STATUS_LABELS[s.status]}\n`; });
   bot.sendMessage(msg.chat.id, report, { parse_mode: "Markdown" });
+});
+
+// ─── /export (Excel of today's records) ────────────────────────────────────
+bot.onText(/\/export/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
+
+  const now       = Date.now();
+  const camDate   = nowCambodiaDateStr();
+  const staffList = Object.entries(sessions).filter(([uid, s]) => s.name && s.workStart);
+
+  if (staffList.length === 0) {
+    return bot.sendMessage(msg.chat.id, "📋 No staff records to export today.");
+  }
+
+  try {
+    await bot.sendMessage(msg.chat.id, "⏳ Generating Excel file...");
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet    = workbook.addWorksheet(`Records ${camDate}`);
+
+    // Define columns
+    sheet.columns = [
+      { header: "Name",       key: "name",     width: 20 },
+      { header: "Clock-in",   key: "in",       width: 12 },
+      { header: "Clock-out",  key: "out",      width: 12 },
+      { header: "Work Time",  key: "work",     width: 12 },
+      { header: "Away Time",  key: "away",     width: 12 },
+      { header: "Late",       key: "late",     width: 10 },
+      { header: "Overtime",   key: "overtime", width: 18 },
+    ];
+
+    // Style header row
+    sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2B5278" } };
+    sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+    // Add data rows
+    staffList.forEach(([uid, s]) => {
+      const totalMs       = now - s.workStart;
+      const currentAwayMs = s.awayStart ? (now - s.awayStart) : 0;
+      const workMs        = totalMs - s.totalAwayMs - currentAwayMs;
+
+      let clockOut = "—";
+      if (s.status === "off" && s.log) {
+        const offEntry = s.log.find(l => l.action.includes("Off Work"));
+        if (offEntry) clockOut = offEntry.timeStr || "—";
+      }
+
+      let overtimeStr = "—";
+      if (s.overtimeEvents.length > 0) {
+        overtimeStr = s.overtimeEvents.map(ev => {
+          const type = ev.type === "eat" ? "Eat" : ev.type === "toilet" ? "Toilet" : ev.type === "smoke" ? "Smoke" : "Other";
+          return `${type} +${formatDuration(ev.duration - ev.limit)}`;
+        }).join(", ");
+      }
+
+      sheet.addRow({
+        name:     s.name,
+        in:       s.clockInTime || "—",
+        out:      clockOut,
+        work:     formatDuration(workMs),
+        away:     formatDuration(s.totalAwayMs + currentAwayMs),
+        late:     s.wasLate ? `${s.lateMinutes} min` : "—",
+        overtime: overtimeStr,
+      });
+    });
+
+    // Add borders to all cells
+    sheet.eachRow((row) => {
+      row.eachCell((cell) => {
+        cell.border = {
+          top:    { style: "thin" },
+          left:   { style: "thin" },
+          bottom: { style: "thin" },
+          right:  { style: "thin" },
+        };
+        cell.alignment = { vertical: "middle", horizontal: "center" };
+      });
+    });
+
+    // Save to file
+    const filename = `staff_records_${camDate}.xlsx`;
+    const filepath = `/tmp/${filename}`;
+    await workbook.xlsx.writeFile(filepath);
+
+    // Send the file
+    await bot.sendDocument(msg.chat.id, filepath, {
+      caption: `📊 Staff Records — ${camDate}\nTotal: ${staffList.length} staff`,
+    });
+
+    // Clean up
+    fs.unlink(filepath, () => {});
+
+  } catch (err) {
+    console.error("Export error:", err.message);
+    bot.sendMessage(msg.chat.id, "❌ Failed to generate Excel. Please try again.");
+  }
 });
 
 // ─── MESSAGES ──────────────────────────────────────────────────────────────

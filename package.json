@@ -6,6 +6,7 @@
     "start": "node bot.js"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "node-telegram-bot-api": "^0.67.0"
   }
 }
