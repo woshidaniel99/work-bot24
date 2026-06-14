@@ -15,11 +15,25 @@ const WORK_START_UTC_MIN  = 0;
 const REPORT_UTC_HOUR     = 3;  // 10:30 AM Cambodia = 03:30 UTC
 const REPORT_UTC_MIN      = 30;
 
+// ─── BREAK LIMITS ──────────────────────────────────────────────────────────
+// The displayed limit is the "soft" limit. Staff have a grace period until the
+// NEXT full minute. e.g. Eat 30min → 30:00–30:59 is OK, alert fires at 31:00.
+// We add 60 seconds to each so the overtime alert triggers at limit+1 minute.
+const GRACE_MS = 60 * 1000; // 1 minute grace
+
 const AWAY_LIMITS = {
+  eat:    30 * 60 * 1000 + GRACE_MS,  // shows 30m, alert at 31m
+  toilet: 15 * 60 * 1000 + GRACE_MS,  // shows 15m, alert at 16m
+  smoke:   5 * 60 * 1000 + GRACE_MS,  // shows 5m,  alert at 6m
+  other:   5 * 60 * 1000 + GRACE_MS,  // shows 5m,  alert at 6m
+};
+
+// Display limits (the number shown to staff, without the grace minute)
+const DISPLAY_LIMITS = {
   eat:    30 * 60 * 1000,
   toilet: 15 * 60 * 1000,
   smoke:   5 * 60 * 1000,
-  other:  30 * 60 * 1000,
+  other:   5 * 60 * 1000,
 };
 
 // ─── STATE ─────────────────────────────────────────────────────────────────
@@ -140,22 +154,24 @@ const STATUS_LABELS = {
 // ─── AWAY TIMER ────────────────────────────────────────────────────────────
 function startAwayTimer(userId, chatId, statusKey, mention, name) {
   const session = getSession(userId);
-  const limit   = AWAY_LIMITS[statusKey];
+  const limit   = AWAY_LIMITS[statusKey];           // grace limit (fires at +1min)
+  const dispLimit = DISPLAY_LIMITS[statusKey];      // friendly number shown to staff
   if (!limit) return;
   if (session.awayTimer) clearTimeout(session.awayTimer);
 
   session.awayTimer = setTimeout(() => {
     const awayMs     = Date.now() - session.awayStart;
-    const limitLabel = formatDuration(limit);
+    const limitLabel = formatDuration(dispLimit);
     const awayLabel  = formatDuration(awayMs);
 
-    session.overtimeEvents.push({ type: statusKey, duration: awayMs, limit, time: Date.now() });
+    // Store with the DISPLAY limit so overtime math in reports makes sense
+    session.overtimeEvents.push({ type: statusKey, duration: awayMs, limit: dispLimit, time: Date.now() });
 
     send(chatId,
       `⚠️ *超时提醒 / Overtime Alert!*\n\n` +
       `${mention} 已经 ${STATUS_LABELS[statusKey]} *${awayLabel}*\n` +
-      `已超过限制 ${limitLabel}。请马上回座！\n` +
-      `Limit is ${limitLabel}. Please return to your seat!`
+      `已超过限制 ${limitLabel}，算迟到！请马上回座！\n` +
+      `Over the ${limitLabel} limit — counted as late. Please return to your seat!`
     );
 
     sendAdmin(
@@ -630,7 +646,7 @@ bot.on("message", (msg) => {
     session.log.push({ action: text.trim(), time: t, timeStr: camTime });
 
     send(chatId,
-      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: ${camTime} Cambodia\n⏱ 限制 Limit: ${formatDuration(AWAY_LIMITS[statusKey])}`, true);
+      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: ${camTime} Cambodia\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
@@ -650,13 +666,14 @@ bot.on("message", (msg) => {
       session.totalAwayMs += awayDuration;
       session.awayStart = null;
     }
-    const limitMs     = AWAY_LIMITS[session.awayType] || 0;
-    const wasOvertime = awayDuration > limitMs;
-    session.status    = "work";
+    const graceLimitMs = AWAY_LIMITS[session.awayType] || 0;      // fires at +1 min
+    const dispLimitMs  = DISPLAY_LIMITS[session.awayType] || 0;   // friendly number
+    const wasOvertime  = awayDuration >= graceLimitMs;            // late only if hit 31min
+    session.status     = "work";
     session.log.push({ action: "回座 Back to Seat", time: t, timeStr: camTime });
 
     let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: ${camTime} Cambodia\n离开 Away: ${formatDuration(awayDuration)}`;
-    if (wasOvertime) msg2 += `\n⚠️ 超时 Overtime by *${formatDuration(awayDuration - limitMs)}*!`;
+    if (wasOvertime) msg2 += `\n⚠️ 超时算迟到 Overtime by *${formatDuration(awayDuration - dispLimitMs)}*!`;
     send(chatId, msg2, true);
   }
 });
