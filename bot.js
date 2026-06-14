@@ -67,11 +67,16 @@ function nowCambodiaDateStr() {
   return cam.toISOString().slice(0, 10);
 }
 
-// ── ALWAYS use msg.from (the person who tapped) — never use reply_to ────────
+// ── ALWAYS use the user's unique ID for mentions ───────────────────────────
+// Using @username as plain text lets Telegram re-resolve it, which can ping
+// the WRONG person if usernames change or conflict. A tg://user?id= link is
+// tied to the unique account ID and can never point to the wrong person.
 function getMention(msg) {
-  const user = msg.from; // always the actual sender
-  if (user.username) return `@${user.username}`;
-  return `[${user.first_name || "Staff"}](tg://user?id=${user.id})`;
+  const user = msg.from;
+  const name = user.first_name || user.username || "Staff";
+  // Escape Markdown special characters in the display name
+  const safeName = name.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
+  return `[${safeName}](tg://user?id=${user.id})`;
 }
 
 function getName(msg) {
@@ -147,8 +152,9 @@ function startAwayTimer(userId, chatId, statusKey, mention, name) {
     session.overtimeEvents.push({ type: statusKey, duration: awayMs, limit, time: Date.now() });
 
     send(chatId,
-      `⚠️ *Overtime Alert!*\n\n` +
-      `${mention} has been on *${STATUS_LABELS[statusKey]}* for *${awayLabel}*\n` +
+      `⚠️ *超时提醒 / Overtime Alert!*\n\n` +
+      `${mention} 已经 ${STATUS_LABELS[statusKey]} *${awayLabel}*\n` +
+      `已超过限制 ${limitLabel}。请马上回座！\n` +
       `Limit is ${limitLabel}. Please return to your seat!`
     );
 
@@ -268,7 +274,7 @@ function resetDailySessions() {
 // Using a window (not exact minute) means a server restart won't skip it.
 const REPORT_TRIGGER_MIN = REPORT_UTC_HOUR * 60 + REPORT_UTC_MIN; // minutes since UTC midnight
 
-setInterval(() => {
+setInterval(async () => {
   const now      = new Date();
   const today    = nowCambodiaDateStr();
   const nowMin   = now.getUTCHours() * 60 + now.getUTCMinutes();
@@ -278,13 +284,30 @@ setInterval(() => {
 
   if (inWindow && lastReportDate !== today) {
     lastReportDate = today;
-    console.log(`📊 Sending daily report... (${today} at ${nowCambodiaStr()} Cambodia)`);
-    sendAdmin(generateDailyReport());
-    setTimeout(() => { resetDailySessions(); console.log("🔄 Sessions reset for new day."); }, 5000);
+    console.log(`📊 Sending daily Excel report... (${today} at ${nowCambodiaStr()} Cambodia)`);
+
+    try {
+      const result = generateTxtFile();
+      if (result) {
+        // Send the txt file to admin
+        await bot.sendDocument(ADMIN_CHAT_ID, result.filepath, {
+          caption: `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} Cambodia`,
+        });
+        fs.unlink(result.filepath, () => {});
+      } else {
+        sendAdmin(`📊 *DAILY REPORT — ${today}*\n\nNo staff records today.`);
+      }
+    } catch (err) {
+      console.error("Daily txt report error:", err.message);
+      // Fallback to text message if file fails
+      sendAdmin(generateDailyReport());
+    }
+
+    setTimeout(() => { resetDailySessions(); console.log("🔄 Sessions reset for new day."); }, 8000);
   }
 }, 30 * 1000); // check every 30 seconds
 
-console.log(`⏰ Report scheduler active — sends daily at 10:30 AM Cambodia`);
+console.log(`⏰ Report scheduler active — sends Excel daily at 10:30 AM Cambodia`);
 
 // ─── BLOCKED COMMANDS ──────────────────────────────────────────────────────
 const BLOCKED_PATTERNS = [/\/timer/i, /\/schedule/i, /\/remind/i, /\/auto/i, /\/alarm/i, /set.?timer/i, /set.?reminder/i, /auto.?clock/i];
@@ -315,97 +338,183 @@ bot.onText(/\/adminstatus/, (msg) => {
   bot.sendMessage(msg.chat.id, report, { parse_mode: "Markdown" });
 });
 
-// ─── /export (Excel of today's records) ────────────────────────────────────
-bot.onText(/\/export/, async (msg) => {
-  if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
+// ─── GENERATE EXCEL FILE (reusable) ────────────────────────────────────────
+// ─── GENERATE TXT FILE (openable in Notepad) ───────────────────────────────
+function generateTxtFile() {
+  const now       = Date.now();
+  const camDate   = nowCambodiaDateStr();
+  const camTime   = nowCambodiaStr();
+  const staffList = Object.entries(sessions).filter(([uid, s]) => s.name && s.workStart);
 
+  if (staffList.length === 0) return null;
+
+  let txt = "";
+  txt += "========================================\n";
+  txt += `       每日报告 / DAILY REPORT\n`;
+  txt += `       日期 Date: ${camDate}\n`;
+  txt += `       生成时间 Generated: ${camTime} Cambodia\n`;
+  txt += "========================================\n\n";
+
+  let lateList = [], overtimeList = [], lateCount = 0, otCount = 0;
+
+  // Build detailed records
+  staffList.forEach(([uid, s], index) => {
+    const totalMs       = now - s.workStart;
+    const currentAwayMs = s.awayStart ? (now - s.awayStart) : 0;
+    const workMs        = totalMs - s.totalAwayMs - currentAwayMs;
+
+    let clockOut = "—";
+    if (s.status === "off" && s.log) {
+      const offEntry = s.log.find(l => l.action.includes("Off Work"));
+      if (offEntry) clockOut = offEntry.timeStr || "—";
+    }
+
+    let overtimeStr = "无 None";
+    if (s.overtimeEvents.length > 0) {
+      overtimeStr = s.overtimeEvents.map(ev => {
+        const type = ev.type === "eat" ? "吃饭Eat" : ev.type === "toilet" ? "厕所Toilet" : ev.type === "smoke" ? "抽烟Smoke" : "其他Other";
+        return `${type} +${formatDuration(ev.duration - ev.limit)}`;
+      }).join(", ");
+      otCount++;
+    }
+
+    if (s.wasLate) { lateList.push(`${s.name} (${s.lateMinutes} min)`); lateCount++; }
+    if (s.overtimeEvents.length > 0) overtimeList.push(`${s.name} (${overtimeStr})`);
+
+    txt += `${index + 1}. ${s.name}\n`;
+    txt += `   上班 Clock-in   : ${s.clockInTime || "—"}\n`;
+    txt += `   下班 Clock-out  : ${clockOut}\n`;
+    txt += `   工作时间 Work   : ${formatDuration(workMs)}\n`;
+    txt += `   离开时间 Away   : ${formatDuration(s.totalAwayMs + currentAwayMs)}\n`;
+    txt += `   迟到 Late       : ${s.wasLate ? s.lateMinutes + " min" : "无 No"}\n`;
+    txt += `   超时 Overtime   : ${overtimeStr}\n`;
+    txt += "   ----------------------------------------\n";
+  });
+
+  // Summary section
+  txt += "\n========================================\n";
+  txt += "       总结 / SUMMARY\n";
+  txt += "========================================\n";
+  txt += `总人数 Total staff : ${staffList.length}\n`;
+  txt += `迟到 Late          : ${lateCount}\n`;
+  txt += `超时 Overtime      : ${otCount}\n\n`;
+
+  if (lateList.length > 0) {
+    txt += "迟到名单 LATE STAFF:\n";
+    lateList.forEach(l => { txt += `  - ${l}\n`; });
+    txt += "\n";
+  }
+  if (overtimeList.length > 0) {
+    txt += "超时名单 OVERTIME STAFF:\n";
+    overtimeList.forEach(o => { txt += `  - ${o}\n`; });
+    txt += "\n";
+  }
+  if (lateList.length === 0 && overtimeList.length === 0) {
+    txt += "今天没有问题！很棒！No issues today! Great work!\n\n";
+  }
+
+  txt += "========================================\n";
+  txt += "       报告结束 / End of Report\n";
+  txt += "========================================\n";
+
+  const filename = `staff_report_${camDate}.txt`;
+  const filepath = `/tmp/${filename}`;
+  fs.writeFileSync(filepath, txt, "utf8");
+
+  return { filepath, staffCount: staffList.length, camDate };
+}
+
+// ─── GENERATE EXCEL FILE (reusable) ────────────────────────────────────────
+async function generateExcelFile() {
   const now       = Date.now();
   const camDate   = nowCambodiaDateStr();
   const staffList = Object.entries(sessions).filter(([uid, s]) => s.name && s.workStart);
 
-  if (staffList.length === 0) {
-    return bot.sendMessage(msg.chat.id, "📋 No staff records to export today.");
-  }
+  if (staffList.length === 0) return null;
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet    = workbook.addWorksheet(`Records ${camDate}`);
+
+  sheet.columns = [
+    { header: "Name",       key: "name",     width: 20 },
+    { header: "Clock-in",   key: "in",       width: 12 },
+    { header: "Clock-out",  key: "out",      width: 12 },
+    { header: "Work Time",  key: "work",     width: 12 },
+    { header: "Away Time",  key: "away",     width: 12 },
+    { header: "Late",       key: "late",     width: 10 },
+    { header: "Overtime",   key: "overtime", width: 18 },
+  ];
+
+  sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2B5278" } };
+  sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
+
+  staffList.forEach(([uid, s]) => {
+    const totalMs       = now - s.workStart;
+    const currentAwayMs = s.awayStart ? (now - s.awayStart) : 0;
+    const workMs        = totalMs - s.totalAwayMs - currentAwayMs;
+
+    let clockOut = "—";
+    if (s.status === "off" && s.log) {
+      const offEntry = s.log.find(l => l.action.includes("Off Work"));
+      if (offEntry) clockOut = offEntry.timeStr || "—";
+    }
+
+    let overtimeStr = "—";
+    if (s.overtimeEvents.length > 0) {
+      overtimeStr = s.overtimeEvents.map(ev => {
+        const type = ev.type === "eat" ? "Eat" : ev.type === "toilet" ? "Toilet" : ev.type === "smoke" ? "Smoke" : "Other";
+        return `${type} +${formatDuration(ev.duration - ev.limit)}`;
+      }).join(", ");
+    }
+
+    sheet.addRow({
+      name:     s.name,
+      in:       s.clockInTime || "—",
+      out:      clockOut,
+      work:     formatDuration(workMs),
+      away:     formatDuration(s.totalAwayMs + currentAwayMs),
+      late:     s.wasLate ? `${s.lateMinutes} min` : "—",
+      overtime: overtimeStr,
+    });
+  });
+
+  sheet.eachRow((row) => {
+    row.eachCell((cell) => {
+      cell.border = {
+        top:    { style: "thin" },
+        left:   { style: "thin" },
+        bottom: { style: "thin" },
+        right:  { style: "thin" },
+      };
+      cell.alignment = { vertical: "middle", horizontal: "center" };
+    });
+  });
+
+  const filename = `staff_records_${camDate}.xlsx`;
+  const filepath = `/tmp/${filename}`;
+  await workbook.xlsx.writeFile(filepath);
+
+  return { filepath, staffCount: staffList.length, camDate };
+}
+
+// ─── /export (Excel of today's records) ────────────────────────────────────
+bot.onText(/\/export/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
 
   try {
     await bot.sendMessage(msg.chat.id, "⏳ Generating Excel file...");
+    const result = await generateExcelFile();
 
-    const workbook = new ExcelJS.Workbook();
-    const sheet    = workbook.addWorksheet(`Records ${camDate}`);
+    if (!result) {
+      return bot.sendMessage(msg.chat.id, "📋 No staff records to export today.");
+    }
 
-    // Define columns
-    sheet.columns = [
-      { header: "Name",       key: "name",     width: 20 },
-      { header: "Clock-in",   key: "in",       width: 12 },
-      { header: "Clock-out",  key: "out",      width: 12 },
-      { header: "Work Time",  key: "work",     width: 12 },
-      { header: "Away Time",  key: "away",     width: 12 },
-      { header: "Late",       key: "late",     width: 10 },
-      { header: "Overtime",   key: "overtime", width: 18 },
-    ];
-
-    // Style header row
-    sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-    sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF2B5278" } };
-    sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center" };
-
-    // Add data rows
-    staffList.forEach(([uid, s]) => {
-      const totalMs       = now - s.workStart;
-      const currentAwayMs = s.awayStart ? (now - s.awayStart) : 0;
-      const workMs        = totalMs - s.totalAwayMs - currentAwayMs;
-
-      let clockOut = "—";
-      if (s.status === "off" && s.log) {
-        const offEntry = s.log.find(l => l.action.includes("Off Work"));
-        if (offEntry) clockOut = offEntry.timeStr || "—";
-      }
-
-      let overtimeStr = "—";
-      if (s.overtimeEvents.length > 0) {
-        overtimeStr = s.overtimeEvents.map(ev => {
-          const type = ev.type === "eat" ? "Eat" : ev.type === "toilet" ? "Toilet" : ev.type === "smoke" ? "Smoke" : "Other";
-          return `${type} +${formatDuration(ev.duration - ev.limit)}`;
-        }).join(", ");
-      }
-
-      sheet.addRow({
-        name:     s.name,
-        in:       s.clockInTime || "—",
-        out:      clockOut,
-        work:     formatDuration(workMs),
-        away:     formatDuration(s.totalAwayMs + currentAwayMs),
-        late:     s.wasLate ? `${s.lateMinutes} min` : "—",
-        overtime: overtimeStr,
-      });
+    await bot.sendDocument(msg.chat.id, result.filepath, {
+      caption: `📊 Staff Records — ${result.camDate}\nTotal: ${result.staffCount} staff`,
     });
 
-    // Add borders to all cells
-    sheet.eachRow((row) => {
-      row.eachCell((cell) => {
-        cell.border = {
-          top:    { style: "thin" },
-          left:   { style: "thin" },
-          bottom: { style: "thin" },
-          right:  { style: "thin" },
-        };
-        cell.alignment = { vertical: "middle", horizontal: "center" };
-      });
-    });
-
-    // Save to file
-    const filename = `staff_records_${camDate}.xlsx`;
-    const filepath = `/tmp/${filename}`;
-    await workbook.xlsx.writeFile(filepath);
-
-    // Send the file
-    await bot.sendDocument(msg.chat.id, filepath, {
-      caption: `📊 Staff Records — ${camDate}\nTotal: ${staffList.length} staff`,
-    });
-
-    // Clean up
-    fs.unlink(filepath, () => {});
-
+    fs.unlink(result.filepath, () => {});
   } catch (err) {
     console.error("Export error:", err.message);
     bot.sendMessage(msg.chat.id, "❌ Failed to generate Excel. Please try again.");
@@ -427,6 +536,23 @@ bot.on("message", (msg) => {
 
   if (!text) return;
 
+  // ── BLOCK REPLIES — staff must tap buttons directly, not reply/quote ─────
+  // Replying to an old bot message makes it LOOK like the wrong person is
+  // tagged (the quoted message shows above). Force fresh direct taps only.
+  if (msg.reply_to_message) {
+    // Only block if it's a check-in button text (ignore normal replies/chat)
+    const buttonTexts = ["Start Work", "上班", "Off Work", "下班", "Eat", "吃饭",
+                         "Toilet", "厕所", "Smoke", "抽烟", "Other", "其他",
+                         "Back to Seat", "回座"];
+    if (buttonTexts.some(b => text.includes(b))) {
+      send(chatId,
+        `⚠️ ${mention} 请直接点击按钮，不要回复消息！\n` +
+        `Please tap the button directly — do NOT reply to a message.`
+      );
+      return;
+    }
+  }
+
   // ── BLOCK AUTO CLOCK-IN ─────────────────────────────────────────────────
   if (BLOCKED_PATTERNS.some(p => p.test(text))) {
     send(chatId, `🚫 *Auto clock-in is not allowed!*\n\n${mention} Please tap the button manually.`);
@@ -445,13 +571,13 @@ bot.on("message", (msg) => {
     session.totalAwayMs = 0; session.clockInTime = camTime;
     session.log = [{ action: "上班 Start Work", time: t, timeStr: camTime }];
 
-    let msg2 = `✅ *上班打卡成功！*\n👤 ${mention}\n⏰ Clock-in: ${camTime} Cambodia\n\nStatus: ${STATUS_LABELS["work"]}`;
+    let msg2 = `✅ *上班打卡成功 / Clocked in!*\n👤 ${mention}\n⏰ 上班时间 Clock-in: ${camTime} Cambodia\n\n状态 Status: ${STATUS_LABELS["work"]}`;
 
     if (isLate()) {
       const minsLate = getMinutesLate();
       session.wasLate = true; session.lateMinutes = minsLate;
-      msg2 += `\n\n🚨 *${mention} is LATE by ${minsLate} minute(s)!*\n⏰ Should clock in at 9:00 PM`;
-      sendAdmin(`🚨 *LATE ARRIVAL*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} Cambodia\n📌 Should start: 9:00 PM\n⏱ Late by: *${minsLate} minute(s)*`);
+      msg2 += `\n\n🚨 *${mention} 迟到 ${minsLate} 分钟 / LATE by ${minsLate} min!*\n⏰ 应在 9:00 PM 上班`;
+      sendAdmin(`🚨 *LATE ARRIVAL / 迟到*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} Cambodia\n📌 Should start: 9:00 PM\n⏱ Late by: *${minsLate} minute(s)*`);
     }
     send(chatId, msg2, true);
   }
@@ -470,8 +596,8 @@ bot.on("message", (msg) => {
     session.status = "off";
 
     send(chatId,
-      `🔴 *下班打卡！*\n👤 ${mention}\n⏰ Clock-out: ${camTime} Cambodia\n` +
-      `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}`, true);
+      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: ${camTime} Cambodia\n` +
+      `🕐 总时间 Total: ${formatDuration(totalMs)}\n💼 工作 Work: ${formatDuration(workMs)}\n🚶 离开 Away: ${formatDuration(session.totalAwayMs)}`, true);
 
     sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} Cambodia\n` +
       `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}`);
@@ -498,7 +624,7 @@ bot.on("message", (msg) => {
     session.log.push({ action: text.trim(), time: t, timeStr: camTime });
 
     send(chatId,
-      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\nTime: ${camTime} Cambodia\n⏱ Limit: ${formatDuration(AWAY_LIMITS[statusKey])}`, true);
+      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: ${camTime} Cambodia\n⏱ 限制 Limit: ${formatDuration(AWAY_LIMITS[statusKey])}`, true);
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
@@ -523,8 +649,8 @@ bot.on("message", (msg) => {
     session.status    = "work";
     session.log.push({ action: "回座 Back to Seat", time: t, timeStr: camTime });
 
-    let msg2 = `💺 ${mention} *回座！/ Back to seat!*\nTime: ${camTime} Cambodia\nAway: ${formatDuration(awayDuration)}`;
-    if (wasOvertime) msg2 += `\n⚠️ Overtime by *${formatDuration(awayDuration - limitMs)}*!`;
+    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: ${camTime} Cambodia\n离开 Away: ${formatDuration(awayDuration)}`;
+    if (wasOvertime) msg2 += `\n⚠️ 超时 Overtime by *${formatDuration(awayDuration - limitMs)}*!`;
     send(chatId, msg2, true);
   }
 });
