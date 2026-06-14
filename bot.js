@@ -622,7 +622,7 @@ bot.on("message", (msg) => {
 
     send(chatId,
       `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` Cambodia\n` +
-      `🕐 总时间 Total: ${formatDuration(totalMs)}\n💼 工作 Work: ${formatDuration(workMs)}\n🚶 离开 Away: ${formatDuration(session.totalAwayMs)}`, true);
+      `🕐 总时间 Total: \`${formatDuration(totalMs)}\`\n💼 工作 Work: \`${formatDuration(workMs)}\`\n🚶 离开 Away: \`${formatDuration(session.totalAwayMs)}\``, true);
 
     sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} Cambodia\n` +
       `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}`);
@@ -675,7 +675,7 @@ bot.on("message", (msg) => {
     session.status     = "work";
     session.log.push({ action: "回座 Back to Seat", time: t, timeStr: camTime });
 
-    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: \`${camTime}\` Cambodia\n离开 Away: ${formatDuration(awayDuration)}`;
+    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: \`${camTime}\` Cambodia\n离开 Away: \`${formatDuration(awayDuration)}\``;
     if (wasOvertime) msg2 += `\n⚠️ 超时算迟到 Overtime by *${formatDuration(awayDuration - dispLimitMs)}*!`;
     send(chatId, msg2, true);
   }
