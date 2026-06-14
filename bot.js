@@ -596,7 +596,7 @@ bot.on("message", (msg) => {
     session.totalAwayMs = 0; session.clockInTime = camTime;
     session.log = [{ action: "上班 Start Work", time: t, timeStr: camTime }];
 
-    let msg2 = `✅ *上班打卡成功 / Clocked in!*\n👤 ${mention}\n⏰ 上班时间 Clock-in: ${camTime} Cambodia\n\n状态 Status: ${STATUS_LABELS["work"]}`;
+    let msg2 = `✅ *上班打卡成功 / Clocked in!*\n👤 ${mention}\n⏰ 上班时间 Clock-in: \`${camTime}\` Cambodia\n\n状态 Status: ${STATUS_LABELS["work"]}`;
 
     if (isLate()) {
       const minsLate = getMinutesLate();
@@ -621,7 +621,7 @@ bot.on("message", (msg) => {
     session.status = "off";
 
     send(chatId,
-      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: ${camTime} Cambodia\n` +
+      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` Cambodia\n` +
       `🕐 总时间 Total: ${formatDuration(totalMs)}\n💼 工作 Work: ${formatDuration(workMs)}\n🚶 离开 Away: ${formatDuration(session.totalAwayMs)}`, true);
 
     sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} Cambodia\n` +
@@ -649,7 +649,7 @@ bot.on("message", (msg) => {
     session.log.push({ action: text.trim(), time: t, timeStr: camTime });
 
     send(chatId,
-      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: ${camTime} Cambodia\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
+      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: \`${camTime}\` Cambodia\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
@@ -675,7 +675,7 @@ bot.on("message", (msg) => {
     session.status     = "work";
     session.log.push({ action: "回座 Back to Seat", time: t, timeStr: camTime });
 
-    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: ${camTime} Cambodia\n离开 Away: ${formatDuration(awayDuration)}`;
+    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: \`${camTime}\` Cambodia\n离开 Away: ${formatDuration(awayDuration)}`;
     if (wasOvertime) msg2 += `\n⚠️ 超时算迟到 Overtime by *${formatDuration(awayDuration - dispLimitMs)}*!`;
     send(chatId, msg2, true);
   }
