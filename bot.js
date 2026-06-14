@@ -498,8 +498,31 @@ async function generateExcelFile() {
   return { filepath, staffCount: staffList.length, camDate };
 }
 
-// ─── /export (Excel of today's records) ────────────────────────────────────
+// ─── /export (txt file of today's records, opens in Notepad) ───────────────
 bot.onText(/\/export/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
+
+  try {
+    await bot.sendMessage(msg.chat.id, "⏳ 生成文件中 / Generating file...");
+    const result = generateTxtFile();
+
+    if (!result) {
+      return bot.sendMessage(msg.chat.id, "📋 今天暂无记录 / No staff records to export today.");
+    }
+
+    await bot.sendDocument(msg.chat.id, result.filepath, {
+      caption: `📊 员工记录 / Staff Records — ${result.camDate}\n总数 Total: ${result.staffCount} staff`,
+    });
+
+    fs.unlink(result.filepath, () => {});
+  } catch (err) {
+    console.error("Export error:", err.message);
+    bot.sendMessage(msg.chat.id, "❌ 生成失败 / Failed to generate file. Please try again.");
+  }
+});
+
+// ─── /exportexcel (Excel version, if ever needed) ──────────────────────────
+bot.onText(/\/exportexcel/, async (msg) => {
   if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
 
   try {
@@ -516,7 +539,7 @@ bot.onText(/\/export/, async (msg) => {
 
     fs.unlink(result.filepath, () => {});
   } catch (err) {
-    console.error("Export error:", err.message);
+    console.error("Export Excel error:", err.message);
     bot.sendMessage(msg.chat.id, "❌ Failed to generate Excel. Please try again.");
   }
 });
