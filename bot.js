@@ -536,23 +536,6 @@ bot.on("message", (msg) => {
 
   if (!text) return;
 
-  // ── BLOCK REPLIES — staff must tap buttons directly, not reply/quote ─────
-  // Replying to an old bot message makes it LOOK like the wrong person is
-  // tagged (the quoted message shows above). Force fresh direct taps only.
-  if (msg.reply_to_message) {
-    // Only block if it's a check-in button text (ignore normal replies/chat)
-    const buttonTexts = ["Start Work", "上班", "Off Work", "下班", "Eat", "吃饭",
-                         "Toilet", "厕所", "Smoke", "抽烟", "Other", "其他",
-                         "Back to Seat", "回座"];
-    if (buttonTexts.some(b => text.includes(b))) {
-      send(chatId,
-        `⚠️ ${mention} 请直接点击按钮，不要回复消息！\n` +
-        `Please tap the button directly — do NOT reply to a message.`
-      );
-      return;
-    }
-  }
-
   // ── BLOCK AUTO CLOCK-IN ─────────────────────────────────────────────────
   if (BLOCKED_PATTERNS.some(p => p.test(text))) {
     send(chatId, `🚫 *Auto clock-in is not allowed!*\n\n${mention} Please tap the button manually.`);
