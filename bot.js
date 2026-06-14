@@ -73,7 +73,10 @@ function formatDuration(ms) {
 
 function nowCambodiaStr() {
   const cam = new Date(Date.now() + 7 * 60 * 60 * 1000);
-  return `${String(cam.getUTCHours()).padStart(2,"0")}:${String(cam.getUTCMinutes()).padStart(2,"0")}`;
+  const h = String(cam.getUTCHours()).padStart(2, "0");
+  const m = String(cam.getUTCMinutes()).padStart(2, "0");
+  const s = String(cam.getUTCSeconds()).padStart(2, "0");
+  return `${h}:${m}:${s}`;
 }
 
 function nowCambodiaDateStr() {
