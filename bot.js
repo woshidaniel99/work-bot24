@@ -672,11 +672,35 @@ bot.on("message", (msg) => {
     const graceLimitMs = AWAY_LIMITS[session.awayType] || 0;      // fires at +1 min
     const dispLimitMs  = DISPLAY_LIMITS[session.awayType] || 0;   // friendly number
     const wasOvertime  = awayDuration >= graceLimitMs;            // late only if hit 31min
+    const fromBreak    = STATUS_LABELS[session.awayType] || "休息 Break";  // what they returned from
     session.status     = "work";
     session.log.push({ action: "回座 Back to Seat", time: t, timeStr: camTime });
 
-    let msg2 = `💺 ${mention} *回座成功 / Back to seat!*\n时间 Time: \`${camTime}\` Cambodia\n离开 Away: \`${formatDuration(awayDuration)}\``;
-    if (wasOvertime) msg2 += `\n⚠️ 超时算迟到 Overtime by *${formatDuration(awayDuration - dispLimitMs)}*!`;
+    // Calculate current work time so far
+    const totalSinceStart = t - session.workStart;
+    const currentWorkMs   = totalSinceStart - session.totalAwayMs;
+
+    let msg2 =
+      `💺 ${mention} *回座成功 / Back to seat!*\n` +
+      `🔙 来自 From: ${fromBreak}\n` +
+      `🕐 回座时间 Time: \`${camTime}\` Cambodia\n` +
+      `⏱ 本次离开 This break: \`${formatDuration(awayDuration)}\`\n` +
+      `🚶 今日总离开 Total away today: \`${formatDuration(session.totalAwayMs)}\`\n` +
+      `⏰ 上班时间 Clock-in: \`${session.clockInTime || "—"}\`\n` +
+      `💼 已工作 Worked so far: \`${formatDuration(currentWorkMs)}\``;
+
+    if (wasOvertime) {
+      msg2 += `\n\n⚠️ *超时算迟到 / Overtime by ${formatDuration(awayDuration - dispLimitMs)}!*`;
+      // Notify admin about the overtime
+      sendAdmin(
+        `🚨 *OVERTIME (Back to Seat)*\n\n` +
+        `👤 Staff: ${session.name}\n` +
+        `📍 From: ${fromBreak}\n` +
+        `⏱ Away: ${formatDuration(awayDuration)} (limit: ${formatDuration(dispLimitMs)})\n` +
+        `⚠️ Over by: ${formatDuration(awayDuration - dispLimitMs)}\n` +
+        `🕐 ${camTime} Cambodia`
+      );
+    }
     send(chatId, msg2, true);
   }
 });
