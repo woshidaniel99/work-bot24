@@ -4,16 +4,38 @@ const fs          = require("fs");
 
 // ─── CONFIG ────────────────────────────────────────────────────────────────
 const TOKEN         = process.env.TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;   // Client's admin (the boss)
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
+const SUPER_ADMIN_ID = process.env.SUPER_ADMIN_ID; // Your ID (optional) — you monitor all bots
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
 // ─── TIMEZONE ──────────────────────────────────────────────────────────────
-const WORK_START_UTC_HOUR = 14; // 9:00 PM Cambodia = 14:00 UTC
-const WORK_START_UTC_MIN  = 0;
-const REPORT_UTC_HOUR     = 3;  // 10:30 AM Cambodia = 03:30 UTC
-const REPORT_UTC_MIN      = 30;
+// All times are in Cambodia time (UTC+7). Set these in Railway Variables:
+//   WORK_START_HOUR (0-23) — hour work starts (e.g. 21 for 9 PM)
+//   WORK_START_MIN  (0-59) — minute work starts (e.g. 0)
+//   REPORT_HOUR     (0-23) — hour daily report is sent (e.g. 10)
+//   REPORT_MIN      (0-59) — minute daily report is sent (e.g. 30)
+// If not set, defaults are 9:00 PM work start and 10:30 AM report.
+
+const WORK_START_CAM_HOUR = parseInt(process.env.WORK_START_HOUR || "21");
+const WORK_START_CAM_MIN  = parseInt(process.env.WORK_START_MIN  || "0");
+const REPORT_CAM_HOUR     = parseInt(process.env.REPORT_HOUR     || "10");
+const REPORT_CAM_MIN      = parseInt(process.env.REPORT_MIN      || "30");
+
+// Convert Cambodia time to UTC (Cambodia is UTC+7, so subtract 7 hours)
+function camHourToUtc(h) {
+  const utc = h - 7;
+  return utc < 0 ? utc + 24 : utc;
+}
+
+const WORK_START_UTC_HOUR = camHourToUtc(WORK_START_CAM_HOUR);
+const WORK_START_UTC_MIN  = WORK_START_CAM_MIN;
+const REPORT_UTC_HOUR     = camHourToUtc(REPORT_CAM_HOUR);
+const REPORT_UTC_MIN      = REPORT_CAM_MIN;
+
+console.log(`⚙️  Work starts at ${String(WORK_START_CAM_HOUR).padStart(2,"0")}:${String(WORK_START_CAM_MIN).padStart(2,"0")} Cambodia`);
+console.log(`⚙️  Daily report at ${String(REPORT_CAM_HOUR).padStart(2,"0")}:${String(REPORT_CAM_MIN).padStart(2,"0")} Cambodia`);
 
 // ─── BREAK LIMITS ──────────────────────────────────────────────────────────
 // The displayed limit is the "soft" limit. Staff have a grace period until the
@@ -90,10 +112,10 @@ function nowCambodiaDateStr() {
 // tied to the unique account ID and can never point to the wrong person.
 function getMention(msg) {
   const user = msg.from;
-  const name = user.first_name || user.username || "Staff";
-  // Escape Markdown special characters in the display name
-  const safeName = name.replace(/([_*\[\]()~`>#+\-=|{}.!])/g, "\\$1");
-  return `[${safeName}](tg://user?id=${user.id})`;
+  let name   = user.first_name || user.username || "Staff";
+  // Strip characters that break Markdown links: [ ] ( )
+  name = name.replace(/[\[\]()]/g, "");
+  return `[${name}](tg://user?id=${user.id})`;
 }
 
 function getName(msg) {
@@ -104,8 +126,13 @@ function getName(msg) {
 }
 
 function sendAdmin(message) {
+  // Send to the client's admin (the boss)
   if (ADMIN_CHAT_ID && ADMIN_CHAT_ID !== "YOUR_ADMIN_CHAT_ID") {
     bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" }).catch(() => {});
+  }
+  // Also send to super admin (you) if set, and if different from client admin
+  if (SUPER_ADMIN_ID && SUPER_ADMIN_ID !== ADMIN_CHAT_ID) {
+    bot.sendMessage(SUPER_ADMIN_ID, message, { parse_mode: "Markdown" }).catch(() => {});
   }
 }
 
@@ -126,7 +153,8 @@ function getMinutesLate() {
 }
 
 function isAdmin(userId) {
-  return String(userId) === String(ADMIN_CHAT_ID);
+  const uid = String(userId);
+  return uid === String(ADMIN_CHAT_ID) || uid === String(SUPER_ADMIN_ID);
 }
 
 // ─── KEYBOARD ──────────────────────────────────────────────────────────────
@@ -308,10 +336,16 @@ setInterval(async () => {
     try {
       const result = generateTxtFile();
       if (result) {
-        // Send the txt file to admin
-        await bot.sendDocument(ADMIN_CHAT_ID, result.filepath, {
-          caption: `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} Cambodia`,
-        });
+        const caption = `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} Cambodia`;
+
+        // Send the txt file to the client's admin
+        await bot.sendDocument(ADMIN_CHAT_ID, result.filepath, { caption }).catch(() => {});
+
+        // Also send to super admin (you) if set and different
+        if (SUPER_ADMIN_ID && SUPER_ADMIN_ID !== ADMIN_CHAT_ID) {
+          await bot.sendDocument(SUPER_ADMIN_ID, result.filepath, { caption }).catch(() => {});
+        }
+
         fs.unlink(result.filepath, () => {});
       } else {
         sendAdmin(`📊 *DAILY REPORT — ${today}*\n\nNo staff records today.`);
@@ -601,8 +635,9 @@ bot.on("message", (msg) => {
     if (isLate()) {
       const minsLate = getMinutesLate();
       session.wasLate = true; session.lateMinutes = minsLate;
-      msg2 += `\n\n🚨 *${mention} 迟到 ${minsLate} 分钟 / LATE by ${minsLate} min!*\n⏰ 应在 9:00 PM 上班`;
-      sendAdmin(`🚨 *LATE ARRIVAL / 迟到*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} Cambodia\n📌 Should start: 9:00 PM\n⏱ Late by: *${minsLate} minute(s)*`);
+      const startTimeStr = `${String(WORK_START_CAM_HOUR).padStart(2,"0")}:${String(WORK_START_CAM_MIN).padStart(2,"0")}`;
+      msg2 += `\n\n🚨 ${mention} *迟到 ${minsLate} 分钟 / LATE by ${minsLate} min!*\n⏰ 应在 ${startTimeStr} 上班`;
+      sendAdmin(`🚨 *LATE ARRIVAL / 迟到*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} Cambodia\n📌 Should start: ${startTimeStr}\n⏱ Late by: *${minsLate} minute(s)*`);
     }
     send(chatId, msg2, true);
   }
