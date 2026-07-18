@@ -3,10 +3,11 @@
   "version": "1.0.0",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node bot.js",
+    "start:laos": "node bot-laos.js"
   },
   "dependencies": {
-    "exceljs": "^4.4.0",
-    "node-telegram-bot-api": "^0.67.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "exceljs": "^4.4.0"
   }
 }
