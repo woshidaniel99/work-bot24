@@ -7,6 +7,7 @@ const TOKEN         = process.env.TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;   // Client's admin (the boss)
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 const SUPER_ADMIN_ID = process.env.SUPER_ADMIN_ID; // Your ID (optional) — you monitor all bots
+const COUNTRY        = process.env.COUNTRY || "Cambodia"; // Displayed in messages (default: Cambodia)
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
@@ -34,8 +35,8 @@ const WORK_START_UTC_MIN  = WORK_START_CAM_MIN;
 const REPORT_UTC_HOUR     = camHourToUtc(REPORT_CAM_HOUR);
 const REPORT_UTC_MIN      = REPORT_CAM_MIN;
 
-console.log(`⚙️  Work starts at ${String(WORK_START_CAM_HOUR).padStart(2,"0")}:${String(WORK_START_CAM_MIN).padStart(2,"0")} Cambodia`);
-console.log(`⚙️  Daily report at ${String(REPORT_CAM_HOUR).padStart(2,"0")}:${String(REPORT_CAM_MIN).padStart(2,"0")} Cambodia`);
+console.log(`⚙️  Work starts at ${String(WORK_START_CAM_HOUR).padStart(2,"0")}:${String(WORK_START_CAM_MIN).padStart(2,"0")} ${COUNTRY}`);
+console.log(`⚙️  Daily report at ${String(REPORT_CAM_HOUR).padStart(2,"0")}:${String(REPORT_CAM_MIN).padStart(2,"0")} ${COUNTRY}`);
 
 // ─── BREAK LIMITS ──────────────────────────────────────────────────────────
 // The displayed limit is the "soft" limit. Staff have a grace period until the
@@ -210,7 +211,7 @@ function startAwayTimer(userId, chatId, statusKey, mention, name) {
       `👤 Staff: ${name}\n` +
       `📍 ${STATUS_LABELS[statusKey]}\n` +
       `⏱ Away: ${awayLabel} (limit: ${limitLabel})\n` +
-      `🕐 ${nowCambodiaStr()} Cambodia`
+      `🕐 ${nowCambodiaStr()} ${COUNTRY}`
     );
   }, limit);
 }
@@ -223,7 +224,7 @@ function generateDailyReport() {
   const staffList = Object.entries(sessions);
 
   if (staffList.length === 0) {
-    return `📊 *DAILY REPORT — ${camDate}*\n🕐 ${camTime} Cambodia\n\nNo staff records today.`;
+    return `📊 *DAILY REPORT — ${camDate}*\n🕐 ${camTime} ${COUNTRY}\n\nNo staff records today.`;
   }
 
   let lateList      = [];
@@ -277,7 +278,7 @@ function generateDailyReport() {
 
   // ── Build report ────────────────────────────────────────────────────────
   let report = `📊 *DAILY REPORT — ${camDate}*\n`;
-  report += `🕐 ${camTime} Cambodia\n`;
+  report += `🕐 ${camTime} ${COUNTRY}\n`;
   report += `${"═".repeat(28)}\n\n`;
 
   // Issues summary
@@ -317,7 +318,7 @@ function resetDailySessions() {
 }
 
 // ─── REPORT SCHEDULER ──────────────────────────────────────────────────────
-// Fires any time at or after 03:30 UTC (10:30 AM Cambodia) if not sent today.
+// Fires any time at or after 03:30 UTC (10:30 AM ${COUNTRY}) if not sent today.
 // Using a window (not exact minute) means a server restart won't skip it.
 const REPORT_TRIGGER_MIN = REPORT_UTC_HOUR * 60 + REPORT_UTC_MIN; // minutes since UTC midnight
 
@@ -336,7 +337,7 @@ setInterval(async () => {
     try {
       const result = generateTxtFile();
       if (result) {
-        const caption = `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} Cambodia`;
+        const caption = `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} ${COUNTRY}`;
 
         // Send the txt file to the client's admin
         await bot.sendDocument(ADMIN_CHAT_ID, result.filepath, { caption }).catch(() => {});
@@ -386,7 +387,7 @@ bot.onText(/\/adminstatus/, (msg) => {
   if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
   const staffList = Object.entries(sessions);
   if (staffList.length === 0) return bot.sendMessage(msg.chat.id, "📋 No staff online yet.");
-  let report = `👥 *CURRENT STAFF STATUS*\n🕐 ${nowCambodiaStr()} Cambodia\n\n`;
+  let report = `👥 *CURRENT STAFF STATUS*\n🕐 ${nowCambodiaStr()} ${COUNTRY}\n\n`;
   staffList.forEach(([uid, s]) => { if (s.name) report += `• *${s.name}* → ${STATUS_LABELS[s.status]}\n`; });
   bot.sendMessage(msg.chat.id, report, { parse_mode: "Markdown" });
 });
@@ -405,7 +406,7 @@ function generateTxtFile() {
   txt += "========================================\n";
   txt += `       每日报告 / DAILY REPORT\n`;
   txt += `       日期 Date: ${camDate}\n`;
-  txt += `       生成时间 Generated: ${camTime} Cambodia\n`;
+  txt += `       生成时间 Generated: ${camTime} ${COUNTRY}\n`;
   txt += "========================================\n\n";
 
   let lateList = [], overtimeList = [], lateCount = 0, otCount = 0;
@@ -615,7 +616,7 @@ bot.on("message", (msg) => {
   // ── BLOCK AUTO CLOCK-IN ─────────────────────────────────────────────────
   if (BLOCKED_PATTERNS.some(p => p.test(text))) {
     send(chatId, `🚫 *Auto clock-in is not allowed!*\n\n${mention} Please tap the button manually.`);
-    sendAdmin(`⚠️ *AUTO CLOCK-IN ATTEMPT*\n\n👤 Staff: ${session.name}\n💬 Message: ${text}\n🕐 ${camTime} Cambodia`);
+    sendAdmin(`⚠️ *AUTO CLOCK-IN ATTEMPT*\n\n👤 Staff: ${session.name}\n💬 Message: ${text}\n🕐 ${camTime} ${COUNTRY}`);
     return;
   }
 
@@ -630,14 +631,14 @@ bot.on("message", (msg) => {
     session.totalAwayMs = 0; session.clockInTime = camTime;
     session.log = [{ action: "上班 Start Work", time: t, timeStr: camTime }];
 
-    let msg2 = `✅ *上班打卡成功 / Clocked in!*\n👤 ${mention}\n⏰ 上班时间 Clock-in: \`${camTime}\` Cambodia\n\n状态 Status: ${STATUS_LABELS["work"]}`;
+    let msg2 = `✅ *上班打卡成功 / Clocked in!*\n👤 ${mention}\n⏰ 上班时间 Clock-in: \`${camTime}\` ${COUNTRY}\n\n状态 Status: ${STATUS_LABELS["work"]}`;
 
     if (isLate()) {
       const minsLate = getMinutesLate();
       session.wasLate = true; session.lateMinutes = minsLate;
       const startTimeStr = `${String(WORK_START_CAM_HOUR).padStart(2,"0")}:${String(WORK_START_CAM_MIN).padStart(2,"0")}`;
       msg2 += `\n\n🚨 ${mention} *迟到 ${minsLate} 分钟 / LATE by ${minsLate} min!*\n⏰ 应在 ${startTimeStr} 上班`;
-      sendAdmin(`🚨 *LATE ARRIVAL / 迟到*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} Cambodia\n📌 Should start: ${startTimeStr}\n⏱ Late by: *${minsLate} minute(s)*`);
+      sendAdmin(`🚨 *LATE ARRIVAL / 迟到*\n\n👤 Staff: ${session.name}\n⏰ Clock-in: ${camTime} ${COUNTRY}\n📌 Should start: ${startTimeStr}\n⏱ Late by: *${minsLate} minute(s)*`);
     }
     send(chatId, msg2, true);
   }
@@ -656,10 +657,10 @@ bot.on("message", (msg) => {
     session.status = "off";
 
     send(chatId,
-      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` Cambodia\n` +
+      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` ${COUNTRY}\n` +
       `🕐 总时间 Total: \`${formatDuration(totalMs)}\`\n💼 工作 Work: \`${formatDuration(workMs)}\`\n🚶 离开 Away: \`${formatDuration(session.totalAwayMs)}\``, true);
 
-    sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} Cambodia\n` +
+    sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} ${COUNTRY}\n` +
       `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}`);
   }
 
@@ -684,7 +685,7 @@ bot.on("message", (msg) => {
     session.log.push({ action: text.trim(), time: t, timeStr: camTime });
 
     send(chatId,
-      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: \`${camTime}\` Cambodia\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
+      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: \`${camTime}\` ${COUNTRY}\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
@@ -718,7 +719,7 @@ bot.on("message", (msg) => {
     let msg2 =
       `💺 ${mention} *回座成功 / Back to seat!*\n` +
       `🔙 来自 From: ${fromBreak}\n` +
-      `🕐 回座时间 Time: \`${camTime}\` Cambodia\n` +
+      `🕐 回座时间 Time: \`${camTime}\` ${COUNTRY}\n` +
       `⏱ 本次离开 This break: \`${formatDuration(awayDuration)}\`\n` +
       `🚶 今日总离开 Total away today: \`${formatDuration(session.totalAwayMs)}\`\n` +
       `⏰ 上班时间 Clock-in: \`${session.clockInTime || "—"}\`\n` +
@@ -733,7 +734,7 @@ bot.on("message", (msg) => {
         `📍 From: ${fromBreak}\n` +
         `⏱ Away: ${formatDuration(awayDuration)} (limit: ${formatDuration(dispLimitMs)})\n` +
         `⚠️ Over by: ${formatDuration(awayDuration - dispLimitMs)}\n` +
-        `🕐 ${camTime} Cambodia`
+        `🕐 ${camTime} ${COUNTRY}`
       );
     }
     send(chatId, msg2, true);
