@@ -71,6 +71,18 @@ const DISPLAY_LIMITS = {
   other:   5 * 60 * 1000,
 };
 
+// ─── DAILY QUOTAS ──────────────────────────────────────────────────────────
+// How many times per day each break type is allowed
+const DAILY_QUOTAS = {
+  eat:    2,   // max 2 times
+  toilet: 7,   // max 7 times
+  smoke:  7,   // max 7 times
+  other:  5,   // max 5 times
+};
+
+// Total maximum away time per day (2 hours = 2 * 60 * 60 * 1000 ms)
+const MAX_DAILY_AWAY_MS = 2 * 60 * 60 * 1000;
+
 // ─── STATE ─────────────────────────────────────────────────────────────────
 const sessions = {};
 let lastReportDate = "";
@@ -90,6 +102,8 @@ function getSession(userId) {
       lateMinutes: 0,
       overtimeEvents: [],
       clockInTime: null,
+      // Daily quota counters (reset each day)
+      breakCounts: { eat: 0, toilet: 0, smoke: 0, other: 0 },
     };
   }
   return sessions[userId];
@@ -326,6 +340,7 @@ function resetDailySessions() {
     s.awayType = null; s.awayTimer = null; s.totalAwayMs = 0;
     s.log = []; s.wasLate = false; s.lateMinutes = 0;
     s.overtimeEvents = []; s.clockInTime = null;
+    s.breakCounts = { eat: 0, toilet: 0, smoke: 0, other: 0 };
   });
 }
 
@@ -694,12 +709,51 @@ bot.on("message", (msg) => {
     if (text.includes("Toilet") || text.includes("厕所") || text.includes("Vệ sinh"))   { statusKey = "toilet"; emoji = "🚻"; }
     if (text.includes("Smoke")  || text.includes("抽烟") || text.includes("Hút thuốc")) { statusKey = "smoke";  emoji = "🚬"; }
 
+    // ── CHECK DAILY QUOTA ─────────────────────────────────────────────────
+    const currentCount = session.breakCounts[statusKey] || 0;
+    const quotaLimit   = DAILY_QUOTAS[statusKey];
+    if (currentCount >= quotaLimit) {
+      const typeName = { eat: "吃饭/Eat/Ăn cơm", toilet: "厕所/Toilet/Vệ sinh", smoke: "抽烟/Smoke/Hút thuốc", other: "其他/Other/Khác" }[statusKey];
+      sendAdmin(
+        `🚨 *QUOTA EXCEEDED*\n\n` +
+        `👤 Staff: ${session.name}\n` +
+        `📍 ${STATUS_LABELS[statusKey]}\n` +
+        `⏱ Tried: ${currentCount + 1} times (limit: ${quotaLimit})\n` +
+        `🕐 ${camTime} ${COUNTRY}`
+      );
+      return send(chatId,
+        `🚫 ${mention} *超过每日限制 / Daily Quota Exceeded / Đã hết lượt!*\n\n` +
+        `${typeName} 今日已达 *${quotaLimit}* 次\n` +
+        `Already used ${quotaLimit} times today\n` +
+        `Đã dùng ${quotaLimit} lần hôm nay`
+      );
+    }
+
+    // ── CHECK TOTAL AWAY TIME QUOTA (2 hours) ─────────────────────────────
+    if (session.totalAwayMs >= MAX_DAILY_AWAY_MS) {
+      sendAdmin(
+        `🚨 *TOTAL AWAY LIMIT REACHED*\n\n` +
+        `👤 Staff: ${session.name}\n` +
+        `⏱ Total away: ${formatDuration(session.totalAwayMs)} (limit: 2h)\n` +
+        `🕐 ${camTime} ${COUNTRY}`
+      );
+      return send(chatId,
+        `🚫 ${mention} *今日离开时间已满 2 小时 / Daily 2h away limit reached / Đã hết 2h nghỉ hôm nay!*\n\n` +
+        `请继续工作 / Please continue working / Vui lòng tiếp tục làm việc`
+      );
+    }
+
     session.status = statusKey; session.awayStart = t;
     session.awayType = statusKey;
+    session.breakCounts[statusKey] = (session.breakCounts[statusKey] || 0) + 1;
     session.log.push({ action: text.trim(), time: t, timeStr: camTime });
 
+    const usedCount = session.breakCounts[statusKey];
     send(chatId,
-      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n时间 Time: \`${camTime}\` ${COUNTRY}\n⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}`, true);
+      `${emoji} ${mention} → *${STATUS_LABELS[statusKey]}*\n` +
+      `时间 Time: \`${camTime}\` ${COUNTRY}\n` +
+      `⏱ 限制 Limit: ${formatDuration(DISPLAY_LIMITS[statusKey])}\n` +
+      `📊 今日次数 Today's count: ${usedCount}/${quotaLimit}`, true);
     startAwayTimer(userId, chatId, statusKey, mention, session.name);
   }
 
