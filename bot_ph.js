@@ -23,6 +23,9 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const TZ_OFFSET_HOURS     = parseInt(process.env.TZ_OFFSET       || "7");
 const WORK_START_LOC_HOUR = parseInt(process.env.WORK_START_HOUR || "21");
 const WORK_START_LOC_MIN  = parseInt(process.env.WORK_START_MIN  || "0");
+const WORK_END_LOC_HOUR   = parseInt(process.env.WORK_END_HOUR   || "6");   // shift end hour local time
+const WORK_END_LOC_MIN    = parseInt(process.env.WORK_END_MIN    || "0");
+const MIN_WORK_HOURS      = parseFloat(process.env.MIN_WORK_HOURS || "12"); // minimum hours worked
 const REPORT_LOC_HOUR     = parseInt(process.env.REPORT_HOUR     || "10");
 const REPORT_LOC_MIN      = parseInt(process.env.REPORT_MIN      || "30");
 
@@ -169,14 +172,84 @@ function send(chatId, message, withKeyboard) {
   bot.sendMessage(chatId, message, opts).catch(() => {});
 }
 
+function nowLocalMinutes() {
+  // Returns current local time in minutes since midnight
+  const cam = new Date(Date.now() + TZ_OFFSET_HOURS * 60 * 60 * 1000);
+  return cam.getUTCHours() * 60 + cam.getUTCMinutes();
+}
+
 function isLate() {
-  const now = new Date();
-  return (now.getUTCHours() * 60 + now.getUTCMinutes()) > (WORK_START_UTC_HOUR * 60 + WORK_START_UTC_MIN);
+  const nowMin   = nowLocalMinutes();
+  const startMin = WORK_START_LOC_HOUR * 60 + WORK_START_LOC_MIN;
+  const endMin   = WORK_END_LOC_HOUR * 60 + WORK_END_LOC_MIN;
+
+  // Determine if this is an overnight shift (start > end)
+  const isOvernight = startMin > endMin;
+
+  if (isOvernight) {
+    // Overnight shift (e.g. 18:00 → 06:00 next day)
+    // Late window: after startMin but before midnight (24:00 = 1440)
+    // OR from midnight (0) up to endMin
+    if (nowMin >= startMin && nowMin < 1440) {
+      // We're between start and midnight → late if past start
+      return nowMin > startMin;
+    } else if (nowMin < endMin) {
+      // We're in the early morning part of the shift — NOT late, already inside
+      return false;
+    } else {
+      // We're in the daytime BEFORE the shift starts — NOT late (too early)
+      return false;
+    }
+  } else {
+    // Normal day shift (e.g. 08:00 → 17:00)
+    return nowMin > startMin && nowMin < endMin;
+  }
 }
 
 function getMinutesLate() {
-  const now = new Date();
-  return (now.getUTCHours() * 60 + now.getUTCMinutes()) - (WORK_START_UTC_HOUR * 60 + WORK_START_UTC_MIN);
+  const nowMin   = nowLocalMinutes();
+  const startMin = WORK_START_LOC_HOUR * 60 + WORK_START_LOC_MIN;
+  const diff     = nowMin - startMin;
+  return diff < 0 ? diff + 1440 : diff; // handle wrap-around
+}
+
+function isEarlyClockOut(workStartMs) {
+  // Returns { early: true/false, reason: "..." }
+  const nowMin = nowLocalMinutes();
+  const endMin = WORK_END_LOC_HOUR * 60 + WORK_END_LOC_MIN;
+
+  // Check 1: Before shift end time
+  const startMin    = WORK_START_LOC_HOUR * 60 + WORK_START_LOC_MIN;
+  const isOvernight = startMin > endMin;
+
+  let beforeEnd = false;
+  if (isOvernight) {
+    // Overnight: end is next day morning. Early if still evening/night (nowMin > startMin OR nowMin < endMin means inside shift)
+    // Before end = between startMin and midnight, or between 0 and endMin
+    if (nowMin >= startMin || nowMin < endMin) {
+      // Still inside shift window
+      beforeEnd = nowMin < endMin || nowMin >= startMin;
+      // More precisely: early if between start and endMin (not yet reached endMin)
+      if (nowMin >= startMin) beforeEnd = true;      // still evening/night, before midnight
+      else if (nowMin < endMin) beforeEnd = true;    // early morning, before endMin
+      else beforeEnd = false;
+    }
+  } else {
+    beforeEnd = nowMin < endMin;
+  }
+
+  // Check 2: Worked less than MIN_WORK_HOURS
+  const workedMs    = Date.now() - workStartMs;
+  const workedHours = workedMs / (60 * 60 * 1000);
+  const notEnoughHours = workedHours < MIN_WORK_HOURS;
+
+  if (beforeEnd || notEnoughHours) {
+    let reasons = [];
+    if (beforeEnd)      reasons.push(`before shift end ${String(WORK_END_LOC_HOUR).padStart(2,"0")}:${String(WORK_END_LOC_MIN).padStart(2,"0")}`);
+    if (notEnoughHours) reasons.push(`only worked ${workedHours.toFixed(1)}h (needs ${MIN_WORK_HOURS}h)`);
+    return { early: true, reason: reasons.join(" & "), workedHours };
+  }
+  return { early: false, workedHours };
 }
 
 function isAdmin(userId) {
@@ -683,12 +756,34 @@ bot.on("message", (msg) => {
     const workMs  = totalMs - session.totalAwayMs;
     session.status = "off";
 
-    send(chatId,
-      `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` ${COUNTRY}\n` +
-      `🕐 总时间 Total: \`${formatDuration(totalMs)}\`\n💼 工作 Work: \`${formatDuration(workMs)}\`\n🚶 离开 Away: \`${formatDuration(session.totalAwayMs)}\``, true);
+    // Check for early clock-out
+    const earlyCheck  = isEarlyClockOut(session.workStart);
+    const endTimeStr  = `${String(WORK_END_LOC_HOUR).padStart(2,"0")}:${String(WORK_END_LOC_MIN).padStart(2,"0")}`;
+
+    let msg2 = `🔴 *下班打卡 / Clocked out!*\n👤 ${mention}\n⏰ 下班时间 Clock-out: \`${camTime}\` ${COUNTRY}\n` +
+      `🕐 总时间 Total: \`${formatDuration(totalMs)}\`\n💼 工作 Work: \`${formatDuration(workMs)}\`\n🚶 离开 Away: \`${formatDuration(session.totalAwayMs)}\``;
+
+    if (earlyCheck.early) {
+      session.wasEarlyOut = true;
+      msg2 += `\n\n🚨 ${mention} *提早下班 / EARLY CLOCK-OUT / Tan làm sớm!*\n` +
+              `应工作到 ${endTimeStr} 或至少 ${MIN_WORK_HOURS} 小时\n` +
+              `Should work until ${endTimeStr} or at least ${MIN_WORK_HOURS}h\n` +
+              `⏱ Only worked: ${earlyCheck.workedHours.toFixed(1)}h`;
+
+      sendAdmin(
+        `🚨 *EARLY CLOCK-OUT*\n\n` +
+        `👤 Staff: ${session.name}\n` +
+        `⏰ Clock-out: ${camTime} ${COUNTRY}\n` +
+        `⏱ Worked: ${earlyCheck.workedHours.toFixed(1)}h (needs ${MIN_WORK_HOURS}h)\n` +
+        `📌 Should work until: ${endTimeStr}\n` +
+        `📝 Reason: ${earlyCheck.reason}`
+      );
+    }
+
+    send(chatId, msg2, true);
 
     sendAdmin(`📋 *CLOCKED OUT*\n\n👤 Staff: ${session.name}\n⏰ Clock-out: ${camTime} ${COUNTRY}\n` +
-      `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}`);
+      `🕐 Total: ${formatDuration(totalMs)}\n💼 Work: ${formatDuration(workMs)}\n🚶 Away: ${formatDuration(session.totalAwayMs)}${earlyCheck.early ? "\n⚠️ EARLY CLOCK-OUT" : ""}`);
   }
 
   // ── AWAY ACTIONS ─────────────────────────────────────────────────────────
