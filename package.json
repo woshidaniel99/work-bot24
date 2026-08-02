@@ -4,7 +4,8 @@
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js",
-    "start:laos": "node bot-laos.js"
+    "start:laos": "node bot_laos.js",
+    "start:ph": "node bot_ph.js"
   },
   "dependencies": {
     "node-telegram-bot-api": "^0.67.0",
