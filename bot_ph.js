@@ -156,14 +156,19 @@ function getName(msg) {
 }
 
 function sendAdmin(message) {
-  // Send to the client's admin (the boss)
-  if (ADMIN_CHAT_ID && ADMIN_CHAT_ID !== "YOUR_ADMIN_CHAT_ID") {
-    bot.sendMessage(ADMIN_CHAT_ID, message, { parse_mode: "Markdown" }).catch(() => {});
+  // Support multiple admin IDs (comma-separated in ADMIN_CHAT_ID)
+  const adminIds = new Set();
+  if (ADMIN_CHAT_ID) {
+    ADMIN_CHAT_ID.split(",").forEach(id => {
+      const trimmed = id.trim();
+      if (trimmed && trimmed !== "YOUR_ADMIN_CHAT_ID") adminIds.add(trimmed);
+    });
   }
-  // Also send to super admin (you) if set, and if different from client admin
-  if (SUPER_ADMIN_ID && SUPER_ADMIN_ID !== ADMIN_CHAT_ID) {
-    bot.sendMessage(SUPER_ADMIN_ID, message, { parse_mode: "Markdown" }).catch(() => {});
-  }
+  if (SUPER_ADMIN_ID) adminIds.add(String(SUPER_ADMIN_ID).trim());
+
+  adminIds.forEach(id => {
+    bot.sendMessage(id, message, { parse_mode: "Markdown" }).catch(() => {});
+  });
 }
 
 function send(chatId, message, withKeyboard) {
@@ -254,7 +259,13 @@ function isEarlyClockOut(workStartMs) {
 
 function isAdmin(userId) {
   const uid = String(userId);
-  return uid === String(ADMIN_CHAT_ID) || uid === String(SUPER_ADMIN_ID);
+  // Check ADMIN_CHAT_ID (can be comma-separated)
+  if (ADMIN_CHAT_ID) {
+    const adminList = ADMIN_CHAT_ID.split(",").map(id => id.trim());
+    if (adminList.includes(uid)) return true;
+  }
+  if (String(SUPER_ADMIN_ID) === uid) return true;
+  return false;
 }
 
 // ─── KEYBOARD ──────────────────────────────────────────────────────────────
@@ -439,12 +450,19 @@ setInterval(async () => {
       if (result) {
         const caption = `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} ${COUNTRY}`;
 
-        // Send the txt file to the client's admin
-        await bot.sendDocument(ADMIN_CHAT_ID, result.filepath, { caption }).catch(() => {});
+        // Collect all admin IDs (client admins + super admin)
+        const adminIds = new Set();
+        if (ADMIN_CHAT_ID) {
+          ADMIN_CHAT_ID.split(",").forEach(id => {
+            const trimmed = id.trim();
+            if (trimmed && trimmed !== "YOUR_ADMIN_CHAT_ID") adminIds.add(trimmed);
+          });
+        }
+        if (SUPER_ADMIN_ID) adminIds.add(String(SUPER_ADMIN_ID).trim());
 
-        // Also send to super admin (you) if set and different
-        if (SUPER_ADMIN_ID && SUPER_ADMIN_ID !== ADMIN_CHAT_ID) {
-          await bot.sendDocument(SUPER_ADMIN_ID, result.filepath, { caption }).catch(() => {});
+        // Send file to each admin
+        for (const id of adminIds) {
+          await bot.sendDocument(id, result.filepath, { caption }).catch(() => {});
         }
 
         fs.unlink(result.filepath, () => {});
