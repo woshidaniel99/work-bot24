@@ -6,6 +6,7 @@ const fs          = require("fs");
 const TOKEN         = process.env.TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;   // Client's admin (the boss)
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
+const REPORT_GROUP_ID = process.env.REPORT_GROUP_ID; // Reports sent to this group instead of admins
 const SUPER_ADMIN_ID = process.env.SUPER_ADMIN_ID; // Your ID (optional) — you monitor all bots
 const COUNTRY        = process.env.COUNTRY || "Cambodia"; // Displayed in messages (default: Cambodia)
 
@@ -272,10 +273,10 @@ function isAdmin(userId) {
 function getMainKeyboard() {
   return {
     keyboard: [
-      [{ text: "上班 / Start Work / Bắt đầu" }, { text: "下班 / Off Work / Tan làm" }],
-      [{ text: "吃饭 / Eat / Ăn cơm" }, { text: "上厕所 / Toilet / Vệ sinh" }, { text: "抽烟 / Smoke / Hút thuốc" }],
-      [{ text: "其他 / Other / Khác" }],
-      [{ text: "回座 / Back / Trở lại chỗ" }],
+      [{ text: "上班 / Start Work" }, { text: "下班 / Off Work" }],
+      [{ text: "吃饭 / Eat" }, { text: "上厕所 / Toilet" }, { text: "抽烟 / Smoke" }],
+      [{ text: "其他 / Other" }],
+      [{ text: "回座 / Back to Seat" }],
     ],
     resize_keyboard: true,
     one_time_keyboard: false,
@@ -284,13 +285,13 @@ function getMainKeyboard() {
 
 // ─── STATUS LABELS ─────────────────────────────────────────────────────────
 const STATUS_LABELS = {
-  work:   "🟢 上班中 / Working / Đang làm",
-  eat:    "🍜 吃饭中 / Eating / Ăn cơm",
-  toilet: "🚻 上厕所 / Toilet / Vệ sinh",
-  smoke:  "🚬 抽烟 / Smoking / Hút thuốc",
-  other:  "🔵 其他 / Other / Khác",
-  off:    "🔴 已下班 / Off Work / Đã tan",
-  idle:   "⬜ 未上班 / Not Started / Chưa bắt đầu",
+  work:   "🟢 上班中 / Working",
+  eat:    "🍜 吃饭中 / Eating",
+  toilet: "🚻 上厕所 / Toilet",
+  smoke:  "🚬 抽烟 / Smoking",
+  other:  "🔵 其他 / Other",
+  off:    "🔴 已下班 / Off Work",
+  idle:   "⬜ 未上班 / Not Started",
 };
 
 // ─── AWAY TIMER ────────────────────────────────────────────────────────────
@@ -450,24 +451,38 @@ setInterval(async () => {
       if (result) {
         const caption = `📊 DAILY REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} ${COUNTRY}`;
 
-        // Collect all admin IDs (client admins + super admin)
-        const adminIds = new Set();
-        if (ADMIN_CHAT_ID) {
-          ADMIN_CHAT_ID.split(",").forEach(id => {
-            const trimmed = id.trim();
-            if (trimmed && trimmed !== "YOUR_ADMIN_CHAT_ID") adminIds.add(trimmed);
+        // Send report to the dedicated reports group (or fall back to admins)
+        if (REPORT_GROUP_ID) {
+          await bot.sendDocument(REPORT_GROUP_ID, result.filepath, { caption }).catch((e) => {
+            console.error("Report send to group error:", e.message);
           });
-        }
-        if (SUPER_ADMIN_ID) adminIds.add(String(SUPER_ADMIN_ID).trim());
-
-        // Send file to each admin
-        for (const id of adminIds) {
-          await bot.sendDocument(id, result.filepath, { caption }).catch(() => {});
+          // Also send to super admin (you) for monitoring
+          if (SUPER_ADMIN_ID) {
+            await bot.sendDocument(SUPER_ADMIN_ID, result.filepath, { caption }).catch(() => {});
+          }
+        } else {
+          // Fallback: send to admins if REPORT_GROUP_ID not set
+          const adminIds = new Set();
+          if (ADMIN_CHAT_ID) {
+            ADMIN_CHAT_ID.split(",").forEach(id => {
+              const trimmed = id.trim();
+              if (trimmed && trimmed !== "YOUR_ADMIN_CHAT_ID") adminIds.add(trimmed);
+            });
+          }
+          if (SUPER_ADMIN_ID) adminIds.add(String(SUPER_ADMIN_ID).trim());
+          for (const id of adminIds) {
+            await bot.sendDocument(id, result.filepath, { caption }).catch(() => {});
+          }
         }
 
         fs.unlink(result.filepath, () => {});
       } else {
-        sendAdmin(`📊 *DAILY REPORT — ${today}*\n\nNo staff records today.`);
+        // No records case
+        if (REPORT_GROUP_ID) {
+          bot.sendMessage(REPORT_GROUP_ID, `📊 *DAILY REPORT — ${today}*\n\nNo staff records today.`, { parse_mode: "Markdown" }).catch(() => {});
+        } else {
+          sendAdmin(`📊 *DAILY REPORT — ${today}*\n\nNo staff records today.`);
+        }
       }
     } catch (err) {
       console.error("Daily txt report error:", err.message);
@@ -741,10 +756,34 @@ bot.on("message", (msg) => {
   if (text.startsWith("/")) return;
 
   // ── START WORK ───────────────────────────────────────────────────────────
-  if (text.includes("Start Work") || text.includes("上班") || text.includes("Bắt đầu")) {
+  if (text.includes("Start Work") || text.includes("上班")) {
+    // Already actively working
     if (session.status !== "idle" && session.status !== "off") {
       return send(chatId, `⚠️ ${mention} 你已经上班了！\nYou already clocked in.`);
     }
+
+    // ── RESUME after accidental Off Work ──────────────────────────────────
+    // If they clocked off recently and have an existing workStart, resume that session
+    if (session.status === "off" && session.workStart) {
+      // Remove the "Off Work" entry from log (undo the clock-out)
+      session.log = session.log.filter(l => !l.action.includes("Off Work"));
+      session.status  = "work";
+      session.log.push({ action: "恢复上班 Resume Work", time: t, timeStr: camTime });
+
+      const totalSinceStart = t - session.workStart;
+      const currentWorkMs   = totalSinceStart - session.totalAwayMs;
+
+      const resumeMsg = `🔄 *继续上班 / Resumed Work!*\n👤 ${mention}\n` +
+        `⏰ 原上班时间 Original Clock-in: \`${session.clockInTime}\`\n` +
+        `🕐 恢复时间 Resumed at: \`${camTime}\` ${COUNTRY}\n` +
+        `💼 已工作 Worked so far: \`${formatDuration(currentWorkMs)}\`\n\n` +
+        `状态 Status: ${STATUS_LABELS["work"]}`;
+
+      sendAdmin(`🔄 *WORK RESUMED*\n\n👤 Staff: ${session.name}\n⏰ Original clock-in: ${session.clockInTime}\n🕐 Resumed: ${camTime} ${COUNTRY}\n💼 Worked so far: ${formatDuration(currentWorkMs)}`);
+      return send(chatId, resumeMsg, true);
+    }
+
+    // ── FRESH clock-in ────────────────────────────────────────────────────
     session.status = "work"; session.workStart = t;
     session.totalAwayMs = 0; session.clockInTime = camTime;
     session.log = [{ action: "上班 Start Work", time: t, timeStr: camTime }];
@@ -762,7 +801,7 @@ bot.on("message", (msg) => {
   }
 
   // ── OFF WORK ─────────────────────────────────────────────────────────────
-  else if (text.includes("Off Work") || text.includes("下班") || text.includes("Tan làm")) {
+  else if (text.includes("Off Work") || text.includes("下班")) {
     if (session.status === "idle" || session.status === "off") {
       return send(chatId, `⚠️ ${mention} 你还没上班呢！\nYou haven't clocked in yet.`);
     }
@@ -783,7 +822,7 @@ bot.on("message", (msg) => {
 
     if (earlyCheck.early) {
       session.wasEarlyOut = true;
-      msg2 += `\n\n🚨 ${mention} *提早下班 / EARLY CLOCK-OUT / Tan làm sớm!*\n` +
+      msg2 += `\n\n🚨 ${mention} *提早下班 / EARLY CLOCK-OUT!*\n` +
               `应工作到 ${endTimeStr} 或至少 ${MIN_WORK_HOURS} 小时\n` +
               `Should work until ${endTimeStr} or at least ${MIN_WORK_HOURS}h\n` +
               `⏱ Only worked: ${earlyCheck.workedHours.toFixed(1)}h`;
@@ -806,10 +845,10 @@ bot.on("message", (msg) => {
 
   // ── AWAY ACTIONS ─────────────────────────────────────────────────────────
   else if (
-    text.includes("Eat") || text.includes("吃饭") || text.includes("Ăn cơm") ||
-    text.includes("Toilet") || text.includes("厕所") || text.includes("Vệ sinh") ||
-    text.includes("Smoke") || text.includes("抽烟") || text.includes("Hút thuốc") ||
-    text.includes("Other") || text.includes("其他") || text.includes("Khác")
+    text.includes("Eat") || text.includes("吃饭") ||
+    text.includes("Toilet") || text.includes("厕所") ||
+    text.includes("Smoke") || text.includes("抽烟") ||
+    text.includes("Other") || text.includes("其他")
   ) {
     if (session.status === "idle" || session.status === "off") {
       return send(chatId, `⚠️ ${mention} 请先上班打卡！\nPlease clock in first.`);
@@ -818,15 +857,15 @@ bot.on("message", (msg) => {
       return send(chatId, `⚠️ ${mention} 你已经在: ${STATUS_LABELS[session.status]}`);
     }
     let statusKey = "other"; let emoji = "🔵";
-    if (text.includes("Eat")    || text.includes("吃饭") || text.includes("Ăn cơm"))    { statusKey = "eat";    emoji = "🍜"; }
-    if (text.includes("Toilet") || text.includes("厕所") || text.includes("Vệ sinh"))   { statusKey = "toilet"; emoji = "🚻"; }
-    if (text.includes("Smoke")  || text.includes("抽烟") || text.includes("Hút thuốc")) { statusKey = "smoke";  emoji = "🚬"; }
+    if (text.includes("Eat")    || text.includes("吃饭"))  { statusKey = "eat";    emoji = "🍜"; }
+    if (text.includes("Toilet") || text.includes("厕所"))  { statusKey = "toilet"; emoji = "🚻"; }
+    if (text.includes("Smoke")  || text.includes("抽烟"))  { statusKey = "smoke";  emoji = "🚬"; }
 
     // ── CHECK DAILY QUOTA ─────────────────────────────────────────────────
     const currentCount = session.breakCounts[statusKey] || 0;
     const quotaLimit   = DAILY_QUOTAS[statusKey];
     if (currentCount >= quotaLimit) {
-      const typeName = { eat: "吃饭/Eat/Ăn cơm", toilet: "厕所/Toilet/Vệ sinh", smoke: "抽烟/Smoke/Hút thuốc", other: "其他/Other/Khác" }[statusKey];
+      const typeName = { eat: "吃饭/Eat", toilet: "厕所/Toilet", smoke: "抽烟/Smoke", other: "其他/Other" }[statusKey];
       sendAdmin(
         `🚨 *QUOTA EXCEEDED*\n\n` +
         `👤 Staff: ${session.name}\n` +
@@ -835,10 +874,9 @@ bot.on("message", (msg) => {
         `🕐 ${camTime} ${COUNTRY}`
       );
       return send(chatId,
-        `🚫 ${mention} *超过每日限制 / Daily Quota Exceeded / Đã hết lượt!*\n\n` +
+        `🚫 ${mention} *超过每日限制 / Daily Quota Exceeded!*\n\n` +
         `${typeName} 今日已达 *${quotaLimit}* 次\n` +
-        `Already used ${quotaLimit} times today\n` +
-        `Đã dùng ${quotaLimit} lần hôm nay`
+        `Already used ${quotaLimit} times today`
       );
     }
 
@@ -851,8 +889,8 @@ bot.on("message", (msg) => {
         `🕐 ${camTime} ${COUNTRY}`
       );
       return send(chatId,
-        `🚫 ${mention} *今日离开时间已满 2 小时 / Daily 2h away limit reached / Đã hết 2h nghỉ hôm nay!*\n\n` +
-        `请继续工作 / Please continue working / Vui lòng tiếp tục làm việc`
+        `🚫 ${mention} *今日离开时间已满 2 小时 / Daily 2h away limit reached!*\n\n` +
+        `请继续工作 / Please continue working`
       );
     }
 
@@ -871,7 +909,7 @@ bot.on("message", (msg) => {
   }
 
   // ── BACK TO SEAT ─────────────────────────────────────────────────────────
-  else if (text.includes("Back") || text.includes("回座") || text.includes("Trở lại")) {
+  else if (text.includes("Back to Seat") || text.includes("Back") || text.includes("回座")) {
     if (session.status === "idle" || session.status === "off") {
       return send(chatId, `⚠️ ${mention} 请先上班打卡！\nPlease clock in first.`);
     }
