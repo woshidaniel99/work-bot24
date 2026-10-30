@@ -8,7 +8,7 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;   // Client's admin (the boss)
 const GROUP_CHAT_ID = process.env.GROUP_CHAT_ID;
 const REPORT_GROUP_ID = process.env.REPORT_GROUP_ID; // Reports sent to this group instead of admins
 const SUPER_ADMIN_ID = process.env.SUPER_ADMIN_ID; // Your ID (optional) — you monitor all bots
-const COUNTRY        = process.env.COUNTRY || "Cambodia"; // Displayed in messages (default: Cambodia)
+const COUNTRY        = process.env.COUNTRY || "Philippines"; // Displayed in messages (default: Philippines)
 
 const bot = new TelegramBot(TOKEN, { polling: true });
 
@@ -19,16 +19,16 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 //   WORK_START_MIN  (0-59)    — minute work starts
 //   REPORT_HOUR     (0-23)    — hour daily report is sent in LOCAL time
 //   REPORT_MIN      (0-59)    — minute daily report is sent
-// Defaults: Cambodia (UTC+7), 9 PM work start, 10:30 AM report
+// Defaults: Philippines (UTC+8), 8 PM → 8 AM shift (12h), 9:00 AM report
 
-const TZ_OFFSET_HOURS     = parseInt(process.env.TZ_OFFSET       || "7");
-const WORK_START_LOC_HOUR = parseInt(process.env.WORK_START_HOUR || "21");
+const TZ_OFFSET_HOURS     = parseInt(process.env.TZ_OFFSET       || "8");
+const WORK_START_LOC_HOUR = parseInt(process.env.WORK_START_HOUR || "20");
 const WORK_START_LOC_MIN  = parseInt(process.env.WORK_START_MIN  || "0");
-const WORK_END_LOC_HOUR   = parseInt(process.env.WORK_END_HOUR   || "6");   // shift end hour local time
+const WORK_END_LOC_HOUR   = parseInt(process.env.WORK_END_HOUR   || "8");   // shift end hour local time
 const WORK_END_LOC_MIN    = parseInt(process.env.WORK_END_MIN    || "0");
 const MIN_WORK_HOURS      = parseFloat(process.env.MIN_WORK_HOURS || "12"); // minimum hours worked
-const REPORT_LOC_HOUR     = parseInt(process.env.REPORT_HOUR     || "10");
-const REPORT_LOC_MIN      = parseInt(process.env.REPORT_MIN      || "30");
+const REPORT_LOC_HOUR     = parseInt(process.env.REPORT_HOUR     || "9");
+const REPORT_LOC_MIN      = parseInt(process.env.REPORT_MIN      || "0");
 
 // For backward compatibility with existing var names
 const WORK_START_CAM_HOUR = WORK_START_LOC_HOUR;
@@ -78,7 +78,7 @@ const DISPLAY_LIMITS = {
 // ─── DAILY QUOTAS ──────────────────────────────────────────────────────────
 // How many times per day each break type is allowed
 const DAILY_QUOTAS = {
-  eat:    2,   // max 2 times
+  eat:    3,   // max 3 times
   toilet: 7,   // max 7 times
   smoke:  7,   // max 7 times
   other:  5,   // max 5 times
@@ -705,6 +705,35 @@ bot.onText(/\/export/, async (msg) => {
   } catch (err) {
     console.error("Export error:", err.message);
     bot.sendMessage(msg.chat.id, "❌ 生成失败 / Failed to generate file. Please try again.");
+  }
+});
+
+// ─── /testreport (send the daily report NOW to the reports group) ──────────
+bot.onText(/\/testreport/, async (msg) => {
+  if (!isAdmin(msg.from.id)) return bot.sendMessage(msg.chat.id, "❌ Not authorized.");
+
+  if (!REPORT_GROUP_ID) {
+    return bot.sendMessage(msg.chat.id, "❌ REPORT_GROUP_ID is not set on Railway.");
+  }
+
+  try {
+    await bot.sendMessage(msg.chat.id, `⏳ Testing report send to group ${REPORT_GROUP_ID}...`);
+
+    const result = generateTxtFile();
+    if (!result) {
+      // Send a test message even if no records
+      await bot.sendMessage(REPORT_GROUP_ID, `📊 *TEST REPORT — ${nowCambodiaDateStr()}*\n\nNo staff records yet.\n\n(This is a test — regular reports send at ${REPORT_LOC_HOUR}:${String(REPORT_LOC_MIN).padStart(2,"0")} ${COUNTRY} daily.)`, { parse_mode: "Markdown" });
+      return bot.sendMessage(msg.chat.id, "✅ Test message sent to reports group (no data available).");
+    }
+
+    const caption = `📊 TEST REPORT — ${result.camDate}\nTotal: ${result.staffCount} staff\n🕐 ${nowCambodiaStr()} ${COUNTRY}`;
+    await bot.sendDocument(REPORT_GROUP_ID, result.filepath, { caption });
+    fs.unlink(result.filepath, () => {});
+
+    bot.sendMessage(msg.chat.id, "✅ Test report sent successfully to reports group!");
+  } catch (err) {
+    console.error("Test report error:", err.message);
+    bot.sendMessage(msg.chat.id, `❌ Failed to send: ${err.message}\n\nCheck:\n1. Is bot added to the reports group?\n2. Is bot ADMIN in the group?\n3. Is REPORT_GROUP_ID correct?`);
   }
 });
 
