@@ -70,17 +70,17 @@ const GRACE_MS = 60 * 1000; // 1 minute grace
 
 const AWAY_LIMITS = {
   eat:    30 * 60 * 1000 + GRACE_MS,  // shows 30m, alert at 31m
-  toilet: 30 * 60 * 1000 + GRACE_MS,  // shows 30m, alert at 31m
-  smoke:  30 * 60 * 1000 + GRACE_MS,  // shows 30m, alert at 31m
-  other:  30 * 60 * 1000 + GRACE_MS,  // shows 30m, alert at 31m
+  toilet: 15 * 60 * 1000 + GRACE_MS,  // shows 15m, alert at 16m
+  smoke:   5 * 60 * 1000 + GRACE_MS,  // shows 5m,  alert at 6m
+  other:   5 * 60 * 1000 + GRACE_MS,  // shows 5m,  alert at 6m
 };
 
 // Display limits (the number shown to staff, without the grace minute)
 const DISPLAY_LIMITS = {
   eat:    30 * 60 * 1000,
-  toilet: 30 * 60 * 1000,
-  smoke:  30 * 60 * 1000,
-  other:  30 * 60 * 1000,
+  toilet: 15 * 60 * 1000,
+  smoke:   5 * 60 * 1000,
+  other:   5 * 60 * 1000,
 };
 
 // ─── DAILY QUOTAS ──────────────────────────────────────────────────────────
